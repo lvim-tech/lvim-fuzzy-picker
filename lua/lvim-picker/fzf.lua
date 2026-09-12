@@ -1050,6 +1050,12 @@ function M.open(opts)
         -- Keep the terminal in TERMINAL-mode whenever its window is entered, so fzf always receives the
         -- keystrokes (a stray focus bounce — LSP attach, msgarea reflow — must not leave keys going to the
         -- editor behind us). The single source of truth for "the fzf list has focus → fzf reads the keys".
+        -- A keep-open restart comes back here with a NEW terminal buffer, and the group is named after the
+        -- buffer — so the previous session's group would never be cleared by `clear = true`. Its buffer-local
+        -- autocmds died with the old buffer; the group itself stayed behind, one per restart.
+        if state.term_augroup then
+            pcall(api.nvim_del_augroup_by_id, state.term_augroup)
+        end
         state.term_augroup = api.nvim_create_augroup("LvimFzfTerm_" .. tbuf, { clear = true })
         api.nvim_create_autocmd("WinEnter", {
             group = state.term_augroup,
