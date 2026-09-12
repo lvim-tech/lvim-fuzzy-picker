@@ -1217,8 +1217,8 @@ build = function(opts, kind)
                     -- A LOCATION ROW carries the answer already: ripgrep matched the line and said
                     -- where. Mark that, in the TEXT after the locator, and leave the path alone.
                     local src = it._src
-                    if type(src) == "table" and src.col and src.lnum then
-                        local pattern = match_pattern() -- the rg pattern, not a filter-mode fuzzy query
+                    if type(src) == "table" and src.col and src.lnum and row_uses_rg_pattern(state, opts, q) then
+                        local pattern = match_pattern() -- the rg pattern (grep mode / nothing typed in filter mode)
                         local locator = (it.text or ""):match("^[^:]*:%d+:%d+:")
                             or (it.text or ""):match("^[^:]*:%d+:%s*")
                         if locator and pattern and pattern ~= "" then
