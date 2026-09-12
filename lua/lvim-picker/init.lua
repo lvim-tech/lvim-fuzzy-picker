@@ -3707,7 +3707,9 @@ local function open_chooser(layout)
     pick_items({
         title = "Pickers",
         items = items,
-        opts = layout and { layout = layout } or nil,
+        -- Un-managed on purpose: the chooser is a one-shot menu, not a workspace. As a managed stack entry it
+        -- stayed PARKED in the dock after the pick and resurfaced on every cycle.
+        opts = { layout = layout, dock_stack = false },
         on_confirm = function(item)
             local fn = item and item.kind and M[item.kind]
             if type(fn) == "function" then
