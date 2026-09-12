@@ -549,6 +549,12 @@ function M.read_preview_async(path, max_lines, cb)
             return fail()
         end
         local parts, total = {}, 0
+        --- Only a regular file has lines to show: a directory OPENS fine and its first read fails (EISDIR),
+        --- which used to deliver an empty preview instead of "[unreadable]".
+        local function not_a_file()
+            uv.fs_close(fd, function() end)
+            fail()
+        end
         local function finish()
             uv.fs_close(fd, function() end)
             local data = table.concat(parts)
@@ -583,7 +589,12 @@ function M.read_preview_async(path, max_lines, cb)
                 step(offset + #chunk)
             end)
         end
-        step(0)
+        uv.fs_fstat(fd, function(serr, st)
+            if serr or not st or st.type ~= "file" then
+                return not_a_file()
+            end
+            step(0)
+        end)
     end)
 end
 
