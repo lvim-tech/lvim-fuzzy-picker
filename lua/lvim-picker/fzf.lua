@@ -773,6 +773,10 @@ function M.open(opts)
                 local old_buf = state.term_buf
                 state.term_started = false
                 state.term_chan = nil
+                -- The pick that just ran is delivered; the restarted fzf is a NEW session with no outcome yet.
+                -- Left `true` (set at the top of finish), a later EXTERNAL close of the kept-open finder — the
+                -- next finder taking the slot, a dock close — was taken as already handled and skipped on_cancel.
+                state.handled = false
                 start_fzf(pan)
                 if old_buf and old_buf ~= state.term_buf and api.nvim_buf_is_valid(old_buf) then
                     pcall(api.nvim_buf_delete, old_buf, { force = true })
