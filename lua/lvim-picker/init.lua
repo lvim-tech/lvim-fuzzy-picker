@@ -3300,7 +3300,7 @@ function M.grep_visual(opts)
         lines[1] = lines[1]:sub(s[3])
     end
     opts.query = (table.concat(lines, " "):gsub("%s+", " "))
-    opts.title = "Grep: " .. opts.query
+    opts.title = opts.title or ("Grep: " .. opts.query)
     return M.grep(opts)
 end
 
@@ -3331,7 +3331,7 @@ function M.grep_curbuf(opts)
         return
     end
     opts.file = file
-    opts.title = "Grep (buf): " .. vim.fn.fnamemodify(file, ":t")
+    opts.title = opts.title or ("Grep (buf): " .. vim.fn.fnamemodify(file, ":t"))
     return M.grep(opts)
 end
 
