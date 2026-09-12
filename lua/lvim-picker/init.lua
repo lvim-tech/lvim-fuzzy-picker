@@ -3722,12 +3722,13 @@ function M.setup_command()
         nargs = "*",
         complete = function(arg_lead, cmd_line, _)
             local parts = vim.split(cmd_line, "%s+")
-            -- first token: a finder OR a layout (`:LvimPicker float` is valid); after a finder: the layout.
+            -- first token: a finder OR a layout (`:LvimPicker float` is valid); the second is whichever of the
+            -- two the first was not — a layout token may come first, so after one the FINDERS are offered.
             local pool = {}
             if #parts <= 2 then
                 pool = vim.list_extend(vim.deepcopy(FINDERS), LAYOUTS)
             elseif #parts == 3 then
-                pool = LAYOUTS
+                pool = vim.tbl_contains(LAYOUTS, parts[2]) and FINDERS or LAYOUTS
             end
             return vim.tbl_filter(function(n)
                 return n:find(arg_lead, 1, true) == 1
