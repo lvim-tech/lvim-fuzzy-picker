@@ -78,10 +78,19 @@ function M.show(actions)
     if hl_key then
         items[#items + 1] = { hl_key, "this help" }
     end
+    -- The help key(s) close the sheet too — each one on its own: `keys.help` may be a LIST, and its joined
+    -- LABEL ("g? / ?") is a row caption, not a key.
+    local close_keys = { "q", "<Esc>" }
+    local hk = k.help
+    for _, key in ipairs(type(hk) == "table" and hk or { hk }) do
+        if type(key) == "string" and key ~= "" then
+            close_keys[#close_keys + 1] = key
+        end
+    end
     require("lvim-ui").help({
         title = "Picker keymaps",
         items = items,
-        close_keys = { "q", "<Esc>", label(k.help) or "g?" },
+        close_keys = close_keys,
     })
 end
 
