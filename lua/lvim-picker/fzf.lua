@@ -1505,6 +1505,17 @@ function M.open(opts)
                 pcall(vim.fn.jobstop, state.term_chan)
                 state.term_chan = nil
             end
+            -- Wipe the terminal buffer. It is a scratch buffer (bufhidden=hide), so closing its window only HID
+            -- it: every finder ever opened left its dead fzf screen behind for the rest of the session. Deferred,
+            -- so the surface finishes tearing its windows down before the buffer goes.
+            local term_buf = state.term_buf
+            if term_buf then
+                vim.schedule(function()
+                    if api.nvim_buf_is_valid(term_buf) then
+                        pcall(api.nvim_buf_delete, term_buf, { force = true })
+                    end
+                end)
+            end
             if state.fifo then
                 pcall(state.fifo.close)
                 state.fifo = nil
