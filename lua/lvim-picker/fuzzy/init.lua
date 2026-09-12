@@ -273,9 +273,16 @@ end
 ---@param text string
 ---@return integer[]|nil
 local function basename_positions(terms, text)
-    local slash = text:find("/[^/]*$") -- 1-based index of the last "/" (nil = no directory part)
-    local off = slash or 0 -- bytes before the basename → the offset to lift name positions into path coords
-    local base = text:sub(off + 1)
+    local slash = text:find("/[^/]*$") -- 1-based BYTE index of the last "/" (nil = no directory part)
+    local base = text:sub((slash or 0) + 1)
+    -- `match_indices` yields 0-based CHAR positions, so the lift into path coordinates must be the CHAR
+    -- count of the directory part (its byte length overshoots as soon as the path holds a multibyte
+    -- character: every highlight then landed past the name, or fell off the row entirely).
+    local off = 0
+    if slash then
+        local _, n = text:sub(1, slash):gsub("[^\128-\191]", "")
+        off = n
+    end
     local hits = {}
     for _, t in ipairs(terms) do
         local bm = utils.match_indices(t, base) -- 0-based positions within the basename, or nil
