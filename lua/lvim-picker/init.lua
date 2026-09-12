@@ -216,6 +216,40 @@ local function filter(items, query, cb)
     end)
 end
 
+--- Drop the candidate-text cache + the prepared fuzzy context of a CLOSING finder — only when they are ITS
+--- (its normalised `items` or its filter-narrowed pool). The cache is module-level (one slot), so a finder
+--- closing while ANOTHER is live (a second layout — the dock holds several) used to release the live one's
+--- context, and its next keystroke re-prepared the whole pool.
+---@param state table   the closing finder's state (`filter_pool` = its narrowed pool, when filters exist)
+---@param items table[] the closing finder's normalised item list
+local function release_run(state, items)
+    local c = _texts_cache
+    if c and (c.pool == items or c.pool == state.filter_pool) then
+        fuzzy.release(c.texts)
+        _texts_cache = nil
+    end
+end
+M._filter, M._release_run = filter, release_run
+M._texts_pool = function()
+    return _texts_cache and _texts_cache.pool or nil
+end
+
+--- Whether a LOCATION row (a grep hit with `lnum`/`col`) marks the rg PATTERN, or leaves the marking to the
+--- fuzzy term matcher. In GREP mode the rows show what rg matched. In FILTER mode (rg frozen, the typed text
+--- fuzzy-filters the loaded hits) a non-empty query is what the user is looking at, so the rows light the
+--- fuzzy terms — the fzf-lua behaviour; with nothing typed the rg pattern is still the best marking.
+---@param state table
+---@param opts table
+---@param q string?  the typed query (`state.live_query`)
+---@return boolean
+local function row_uses_rg_pattern(state, opts, q)
+    if not (opts and opts.grep) then
+        return true
+    end
+    return not (state.grep_mode == "filter" and q ~= nil and q ~= "")
+end
+M._row_uses_rg_pattern = row_uses_rg_pattern
+
 --- Scroll a row HORIZONTALLY so its match stays on screen, the way fzf does. A grep result is
 --- `path:lnum:col:text`, and on a long line the match can sit far past the window's right edge —
 --- the row then shows a locator and a stretch of text that says nothing about why it matched.
@@ -2504,8 +2538,7 @@ build = function(opts, kind)
             if state.grep_stop then -- kill an in-flight grep rg (the controller's live/fixed producer)
                 pcall(state.grep_stop)
             end
-            _texts_cache = nil -- drop the cached candidate texts (and the fuzzy prepared context) for this run
-            fuzzy.release()
+            release_run(state, items) -- drop THIS run's cached candidate texts + prepared fuzzy context (not another live finder's)
             if state.blob then -- free the native blob-stream pool (a huge tree's SoA reclaimed eagerly)
                 fuzzy.blob_free(state.blob)
                 state.blob = nil

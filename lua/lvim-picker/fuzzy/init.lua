@@ -488,13 +488,25 @@ end
 --- huge-tree scale) does not linger in this module until the next search replaces it — `engine.free` also
 --- releases the NATIVE side eagerly (ABI 2), so ~60–100 MB of prepared context is reclaimed on close instead
 --- of lingering until another search re-prepares.
-function M.release()
+--- With `texts` given, only the context prepared for THAT candidate array is dropped — a finder closing while
+--- another is live must not free the live one's context (the cache is one module-level slot).
+---@param texts? string[]
+function M.release(texts)
+    if texts ~= nil and _ctx_cache and _ctx_cache.texts ~= texts then
+        return
+    end
     stop_marshal() -- cancel any background catch-up before the context it feeds is freed
     _last_query, _last_cb = nil, nil
     if _ctx_cache then
         engine.free(_ctx_cache.ctx)
         _ctx_cache = nil
     end
+end
+
+--- The candidate array the cached context was prepared for (nil when none) — a seam for tests.
+---@return string[]?
+function M._ctx_texts()
+    return _ctx_cache and _ctx_cache.texts or nil
 end
 
 -- ─── blob-ingest streaming (GAP-5) ───────────────────────────────────────────
