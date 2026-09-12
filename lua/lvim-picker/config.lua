@@ -11,16 +11,23 @@
 
 ---@class LvimPickerConfig
 ---@field layout          string   Default layout for every finder: "area" | "float" | "bottom"
+---@field max_rows        integer? Optional local cap on the visible rows; nil = follow the central dock geometry height
 ---@field dock            LvimPickerDock  This plugin's OWN docking defaults (namespaced): dock_stack + per-layout force geometry
 ---@field fzf_tui         boolean  Use the real fzf TUI for heavy command-driven finders (false = the Lua tint list)
+---@field debounce_ms     integer  (tint list) debounce of the query match, in ms (0 = a fresh match on every keystroke)
+---@field stream_refresh_ms integer  (streamed finders) how often, in ms, the growing pool re-renders while streaming
+---@field marshal_cap     integer  (tint list) candidates marshaled into the native matcher per background slice
 ---@field keys            table    All finder keys (accept / mark / quickfix / preview scroll / park / abort / nav)
 ---@field marker          string   The mark indicator glyph drawn before a marked row (multi-select)
 ---@field show_icons      boolean  Show file/directory icons in the finder lists (both backends)
+---@field footer_separator string  The glyph dividing footer button groups
+---@field footer          table    The footer button list per mode (`insert` / `normal`): groups of action ids
 ---@field grep_multiline  integer|boolean The fzf grep result layout: 1 = 2-row, 2 = 2-row + gap, false/0 = 1-row
 ---@field title_pos       "left"|"center"|"right"  Finder-title alignment — every layout the same (default "center")
 ---@field statusline      boolean  Publish the finder title + counter + query to the bottom statusline
 ---@field stream_slice_ms integer  Main-thread time budget (ms) of one paced stream-ingest slice (see spawn_stream)
----@field grep_max        integer  Hard cap on collected ripgrep matches per tint grep (bounds memory; kills rg at the cap)
+---@field grep_max        integer  (tint grep) the native-blob STORE ceiling: matches past it are counted, not stored
+---@field grep_max_columns integer  (tint grep) cap on each ripgrep result line's length (rg --max-columns); 0 = off
 ---@field preview_debounce_ms integer  Settle time (ms) before the SYNC preview updates while scrolling (file previews are async, no debounce)
 ---@field preview_cache      integer  How many recently previewed files the async file-preview LRU cache keeps (instant re-visits)
 ---@field preview_max_lines  integer  Hard cap on lines materialised per async file preview (bounds a deep match in a huge file)
@@ -31,7 +38,8 @@
 ---@field prompt          table    The prompt badge before the query (icon / label / spacing pads)
 ---@field caret           table    The input caret (hl group + guicursor shape)
 ---@field hl              table    Highlight groups for every finder element (all overridable)
----@field preview         table    The preview winbar (devicon toggle + path pads)
+---@field preview         table    The preview winbar (devicon toggle + path pads) + `match` (mark the pattern's matches in the preview)
+---@field list_clip       string|false  The mark for text scrolled off a row's left edge; false = no row scrolling
 ---@field empty_text      string   Text shown when there are no results
 ---@field empty_preview   string   The preview placeholder text when nothing is focused
 ---@field list_wrap       boolean  Soft-wrap the list rows instead of truncating long matches

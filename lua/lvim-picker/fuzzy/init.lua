@@ -155,8 +155,8 @@ end
 
 --- Arm the background catch-up: keep marshaling bounded slices into the native context, across event-loop
 --- ticks (so it never blocks), until it reaches the pool. While the pool is still GROWING it only APPENDS —
---- it never re-runs the query (matching during the stream is driven by the 500 ms stream-refresh, which lets
---- each match complete; a match kicked off on every momentary catch-up would supersede the in-flight one
+--- it never re-runs the query (matching during the stream is driven by the `stream_refresh_ms` re-render, which
+--- lets each match complete; a match kicked off on every momentary catch-up would supersede the in-flight one
 --- forever, so nothing would ever settle). Only once the pool holds STEADY for a couple of ticks — i.e. the
 --- stream has finished — does it replay the last query ONCE, over the now-complete context, for full-set
 --- results. Idempotent: a marshal already in flight keeps running against the (still growing) pool.

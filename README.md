@@ -282,6 +282,9 @@ require("lvim-picker").setup({
     prompt = {
         icon = "➤",
         label = "",
+        -- (live grep) the badge while <C-g> FILTER mode is on (rg frozen, the query fuzzy-filters the results)
+        filter_icon = "󰈲",
+        filter_label = "Filter",
         pad_left = 1,
         icon_gap = 1,
         pad_right = 1,
@@ -299,6 +302,8 @@ require("lvim-picker").setup({
         sel_odd = "LvimUiMsgAreaSelOdd",
         sel_even = "LvimUiMsgAreaSelEven",
         match = "LvimUiMsgAreaMatch",
+        preview_match = "LvimUiMsgAreaMatch", -- every match of the pattern inside the PREVIEW
+        preview_match_focus = "LvimUiPeekTitle", -- the one the focused result points at (line:col)
         list_title = "LvimUiPeekTitle",
         list_count = "LvimUiPeekCount",
         preview_file = "LvimUiPeekFile",
