@@ -3496,9 +3496,12 @@ local function jump_to(it)
     elseif it.bufnr and api.nvim_buf_is_valid(it.bufnr) then
         api.nvim_set_current_buf(it.bufnr)
     end
-    pcall(api.nvim_win_set_cursor, 0, { it.lnum or 1, math.max(0, (it.col or 1) - 1) })
+    -- A quickfix entry without a line carries `lnum = 0`; `nvim_win_set_cursor` rejects row 0, so the jump
+    -- landed nowhere. Row 1 is the honest landing for "this file, no line".
+    pcall(api.nvim_win_set_cursor, 0, { math.max(1, it.lnum or 1), math.max(0, (it.col or 1) - 1) })
     vim.cmd("normal! zz")
 end
+M._jump_to = jump_to
 
 --- Preview a location item: the file/buffer content with a focus on the target line.
 ---@param it table
