@@ -270,14 +270,24 @@ function M.with_dir_icon(argv)
     }
 end
 
+--- True when codepoint `cp` lies in a Unicode Private Use Area — where every Nerd Font glyph lives (the BMP
+--- PUA and the plane-15/16 PUAs used by the nf-md set).
+---@param cp integer
+---@return boolean
+local function is_pua(cp)
+    return (cp >= 0xE000 and cp <= 0xF8FF) or (cp >= 0xF0000 and cp <= 0xFFFFD) or (cp >= 0x100000 and cp <= 0x10FFFD)
+end
+
 --- Strip the leading coloured icon (and any ANSI) a `with_icons` line carries, recovering the raw entry.
 --- A real path / grep row never starts with a PUA codepoint, so this is a clean no-op when icons are off
 --- (and it must NOT greedily eat the first word — grep rows are `file:lnum:col:text` with spaces in the text).
+--- The test is the PUA ranges exactly — a bare `>= U+E000` also swallowed the first character of a path
+--- that starts with an emoji, a fullwidth form (common in CJK file names) or any other astral character.
 ---@param line string
 ---@return string
 function M.strip_icon(line)
     line = line:gsub("\27%[[%d;]*m", "") -- ANSI colour codes (fzf already strips them; belt-and-braces)
-    if vim.fn.strgetchar(line, 0) >= 0xE000 then -- a Nerd/PUA icon glyph leads → drop it + its separator space
+    if is_pua(vim.fn.strgetchar(line, 0)) then -- a Nerd/PUA icon glyph leads → drop it + its separator space
         return (vim.fn.strcharpart(line, 1):gsub("^ ", ""))
     end
     return line
