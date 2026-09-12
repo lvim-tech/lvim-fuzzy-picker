@@ -321,6 +321,58 @@ local function list_row(it, marked, dot)
     return row, spans, #lead
 end
 
+--- Every match of `pattern` in `lines`, as byte ranges — the pattern a grep ran (marked in a location row's
+--- text and in the preview) or the query a finder is narrowed by. `regex` says how the grep read it: a regex
+--- grep (`opts.regex`) tries it as a Vim regex (the two agree on the constructs a reader types at a prompt)
+--- and falls back to a literal when it does not compile; the default `--fixed-strings` grep takes it
+--- LITERALLY — as a regex, `a.b` would also light up `axb`, characters ripgrep never matched. Either way it
+--- follows ripgrep's `--smart-case`: a pattern without an uppercase letter matches case-insensitively, one
+--- with any uppercase letter matches exactly. Bounded by construction: the previewed slice is at most
+--- `preview_max_lines` long and each line yields at most one range per starting column.
+---@param lines string[]
+---@param pattern string?
+---@param regex boolean?  the pattern is a regex (a regex grep); default a fixed string
+---@return { row: integer, c0: integer, c1: integer }[]
+local function preview_matches(lines, pattern, regex)
+    if type(pattern) ~= "string" or pattern == "" then
+        return {}
+    end
+    local smart_ci = not pattern:find("%u") -- rg --smart-case: no uppercase letter → case-insensitive
+    local out = {}
+    if regex then
+        local ok, rx = pcall(vim.regex, (smart_ci and "\\c" or "\\C") .. pattern)
+        if ok and rx then
+            for i, line in ipairs(lines) do
+                local from = 0
+                while from <= #line do
+                    local s0, e0 = rx:match_str(line:sub(from + 1))
+                    if s0 == nil or e0 <= s0 then
+                        break
+                    end
+                    out[#out + 1] = { row = i - 1, c0 = from + s0, c1 = from + e0 }
+                    from = from + e0
+                end
+            end
+            return out
+        end
+    end
+    local needle = smart_ci and pattern:lower() or pattern
+    for i, line in ipairs(lines) do
+        local hay = smart_ci and line:lower() or line
+        local at = 1
+        while true do
+            local s0, e0 = hay:find(needle, at, true)
+            if s0 == nil then
+                break
+            end
+            out[#out + 1] = { row = i - 1, c0 = s0 - 1, c1 = e0 }
+            at = e0 + 1
+        end
+    end
+    return out
+end
+M._preview_matches = preview_matches -- internal test seam
+
 -- ─── dock-stack integration (lvim-utils.dock) ──────────────────────────────────
 -- Each opened finder KIND is an entry in the shared DOCK-STACK manager, whose base identity is
 -- `id = "lvim-picker:<kind>"` — so `files` ≠ `grep` ≠ `buffers` stack as distinct instances, one visible
@@ -732,49 +784,30 @@ build = function(opts, kind)
     -- stop the in-flight rg, and the Ctrl-g grep⇄filter toggle. Nil for non-grep finders.
     local grep_start, grep_stop, grep_toggle
 
-    --- Every match of `pattern` in `lines`, as byte ranges. The pattern is what the reader typed into a LIVE
-    --- grep, i.e. a ripgrep regex — so it is tried as a Vim regex first (the two agree on the constructs a
-    --- reader actually types at a prompt) and, when that does not compile or finds nothing, as a plain literal.
-    --- Bounded by construction: the previewed slice is at most `preview_max_lines` long and each line yields at
-    --- most one range per starting column.
-    ---@param lines string[]
-    ---@param pattern string?
-    ---@return { row: integer, c0: integer, c1: integer }[]
-    local function preview_matches(lines, pattern)
-        if type(pattern) ~= "string" or pattern == "" then
-            return {}
-        end
-        local out = {}
-        local ok, rx = pcall(vim.regex, pattern)
-        local lower = pattern:lower()
-        for i, line in ipairs(lines) do
-            local row, from = i - 1, 0
-            if ok and rx then
-                while from <= #line do
-                    local s0, e0 = rx:match_str(line:sub(from + 1))
-                    if s0 == nil or e0 <= s0 then
-                        break
-                    end
-                    out[#out + 1] = { row = row, c0 = from + s0, c1 = from + e0 }
-                    from = from + e0
-                end
+    -- A grep finder ran the pattern through ripgrep as a REGEX (`opts.regex`) or, by default, as a fixed
+    -- string; the marks in the rows and the preview must read it the same way (see `preview_matches`).
+    local regex_grep = opts.regex == true
+    --- The pattern whose matches are marked in a location row's text and in the PREVIEW: for a grep finder the
+    --- pattern ripgrep ran — what the lines actually matched, and where the row's `line:col` points. The typed
+    --- text is that pattern only in GREP mode; in FILTER mode (and for a fixed-query grep — cword / selection /
+    --- …, which opens in filter mode) the typed text is a fuzzy filter over rg's matches, so marking IT left the
+    --- rows and the preview unmarked on open and the focus mark pointing at the wrong characters. Any other
+    --- finder marks the typed query.
+    ---@return string?
+    local function match_pattern()
+        if opts.grep then
+            local gq = state.grep_query -- the blob controller: the live / frozen / fixed rg query
+            if gq and gq ~= "" then
+                return gq
             end
-            if from == 0 then
-                -- No regex hit on this line: fall back to a case-insensitive literal, which is what a
-                -- reader typing a bare word means and what ripgrep's smart-case gives them.
-                local hay, needle = line:lower(), lower
-                local at = 1
-                while true do
-                    local s0, e0 = hay:find(needle, at, true)
-                    if s0 == nil then
-                        break
-                    end
-                    out[#out + 1] = { row = row, c0 = s0 - 1, c1 = e0 }
-                    at = e0 + 1
-                end
-            end
+        elseif opts.query and opts.query ~= "" then
+            return opts.query -- the fallback (ABI < 5) fixed-query grep stream
         end
-        return out
+        local q = state.live_query
+        if q == nil or q == "" then
+            q = state.query
+        end
+        return q
     end
 
     -- ── multi-select marking + quickfix (config.keys.mark / .quickfix, shared with the fzf backend) ──
@@ -1150,12 +1183,13 @@ build = function(opts, kind)
                     -- A LOCATION ROW carries the answer already: ripgrep matched the line and said
                     -- where. Mark that, in the TEXT after the locator, and leave the path alone.
                     local src = it._src
-                    if type(src) == "table" and src.col and src.lnum and q and q ~= "" then
+                    if type(src) == "table" and src.col and src.lnum then
+                        local pattern = match_pattern() -- the rg pattern, not a filter-mode fuzzy query
                         local locator = (it.text or ""):match("^[^:]*:%d+:%d+:")
                             or (it.text or ""):match("^[^:]*:%d+:%s*")
-                        if locator then
+                        if locator and pattern and pattern ~= "" then
                             local body = (it.text or ""):sub(#locator + 1)
-                            local found = preview_matches({ body }, q)
+                            local found = preview_matches({ body }, pattern, regex_grep)
                             local bytes = {}
                             for _, r in ipairs(found) do
                                 bytes[#bytes + 1] = { c0 = #locator + r.c0, c1 = #locator + r.c1 }
@@ -1373,11 +1407,7 @@ build = function(opts, kind)
                     -- previewed slice is marked, and the one this result points AT (its own line:col) is
                     -- marked harder — so the focused hit reads apart from its neighbours.
                     if prevcfg.match ~= false then
-                        local pattern = state.live_query
-                        if pattern == nil or pattern == "" then
-                            pattern = state.query
-                        end
-                        local ranges = preview_matches(lines, pattern)
+                        local ranges = preview_matches(lines, match_pattern(), regex_grep)
                         for _, r in ipairs(ranges) do
                             local focused = focus ~= nil
                                 and r.row == focus - 1
