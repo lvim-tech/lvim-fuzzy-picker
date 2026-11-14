@@ -168,6 +168,9 @@ return {
         -- FILTER mode = ripgrep is FROZEN at the current results and the typed query fuzzy-filters that loaded
         -- set (no re-grep). Bound in both the query input and the normal-mode list; no-op outside the live grep.
         grep_filter = "<C-g>",
+        -- (tint grep, FILTER mode) cycle what the filter reads in each result: the line's text → the file path →
+        -- the whole file (see `grep_scope` below). Bound in the query input and the normal-mode list.
+        grep_scope = "<C-s>",
         -- SWAP the current finder's backend: the tint list ⇄ the fzf-TUI (only for the command-driven finders
         -- that have both — files / grep / buffers / directories / git_files). Reopens the same finder in the
         -- other backend in place; the query is not carried (retype). Bound ONLY inside the picker. A single
@@ -238,6 +241,10 @@ return {
     -- plus a blank gap row between matches; `false` / `0` = the classic single-row `path:lnum:col:text`.
     -- Needs fzf >= 0.53 (uses `--read0` / `--print0` / `--gap`); silently falls back to the 1-row layout on
     -- older fzf. Only the fzf-TUI grep backend honours this; the tint/Lua grep list is always single-row.
+    -- What a grep FILTER (the tint list, FILTER mode / fixed-query greps) reads in each `path:lnum:col:text` result:
+    -- "line" (default) the line's text — every row left holds the query on its own line, so the preview's focused
+    -- line shows it; "path" the file path; "file" the whole file (exact smart-case terms). `keys.grep_scope` cycles.
+    grep_scope = "line",
     grep_multiline = 1,
 
     -- The finder TITLE's alignment ("left" | "center" | "right") — layout-independent (float / area / bottom

@@ -545,6 +545,14 @@ function M.blob_flush(blob)
     return engine.blob_flush(blob)
 end
 
+--- The text of candidate `idx` (1-based) of `blob`.
+---@param blob LvimFuzzyBlob
+---@param idx integer
+---@return string?
+function M.blob_text(blob, idx)
+    return engine.blob_text(blob, idx)
+end
+
 --- The current candidate count of `blob`.
 ---@param blob LvimFuzzyBlob
 ---@return integer

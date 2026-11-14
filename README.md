@@ -94,6 +94,15 @@ two modes, toggled with `<C-g>` (config `keys.grep_filter`) exactly like fzf's `
 The fixed-query greps (`grep_cword` / `grep_cWORD` / `grep_visual` / `grep_word` / `grep_curbuf`) grep **once**
 for their word and open straight in filter mode, so you fuzzy-narrow their matches as you type.
 
+**Filter scope.** In filter mode the typed query reads one part of each `path:line:col:text` result, cycled
+with `<C-s>` (config `keys.grep_scope`; default `grep_scope = "line"`) and shown in the title
+(`Grep ➤ Filter · line`) and as a footer chip:
+
+- **line** — the line's text only: every row left holds the query on its own line, so the preview's focused
+  line shows it;
+- **path** — the file path only;
+- **file** — the whole file: a row stays when its file contains every query term (exact, smart-case).
+
 Memory stays bounded and the main thread ~0%-blocked at any scale: `grep_max` is the native STORE ceiling (a
 broader query is still fully *counted*, its overflow bytes discarded — never buffered, no `E41: out of
 memory`), and `grep_max_columns` caps each result line so a minified / cache / log file's megabyte-long line
@@ -223,6 +232,7 @@ require("lvim-picker").setup({
         mark = "<Tab>", -- toggle the focused row's mark (multi-select)
         quickfix = "<C-q>", -- send marked (or focused) rows to the quickfix list, then close
         grep_filter = "<C-g>", -- (live tint grep) toggle GREP ⇄ FILTER mode: drive rg vs fuzzy-filter the loaded set
+        grep_scope = "<C-s>", -- (tint grep, FILTER mode) cycle the filter scope: line → path → file
         swap_backend = { "<C-]>" }, -- swap the backend of the current finder (tint list ⇄ fzf TUI)
         preview_down = "<C-d>", -- scroll the preview down
         preview_up = "<C-u>", -- scroll the preview up
@@ -263,6 +273,7 @@ require("lvim-picker").setup({
         },
     },
     -- fzf grep result layout: 1 = 2-row, 2 = 2-row + gap, false/0 = single-row path:lnum:col:text.
+    grep_scope = "line", -- what a grep FILTER reads: "line" (the text) | "path" | "file" (the whole file)
     grep_multiline = 1,
     -- Finder-title alignment: "left" | "center" | "right" — the same in every layout (float/area/bottom).
     -- The title text itself stays dynamic per finder; a per-call `opts.title_pos` overrides this.

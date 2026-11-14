@@ -23,6 +23,7 @@ local preview = require("lvim-ui.preview")
 -- one and the fzf-TUI one) list + ignore identically (config.source). Aliased as locals to keep the
 -- call sites here unchanged.
 local source = require("lvim-picker.source")
+local scope = require("lvim-picker.scope")
 local has = source.has
 local file_list_cmd = source.file_list_cmd
 local dir_list_cmd = source.dir_list_cmd
@@ -816,7 +817,7 @@ build = function(opts, kind)
     local build_footer -- mode-aware footer legend (prompt ⇄ list), assigned near focus_input; used at open + on switch
     -- The GREP controller (assigned after `refilter`, referenced by it + the keymaps): (re)start rg for a query,
     -- stop the in-flight rg, and the Ctrl-g grep⇄filter toggle. Nil for non-grep finders.
-    local grep_start, grep_stop, grep_toggle
+    local grep_start, grep_stop, grep_toggle, scope_toggle
 
     -- A grep finder ran the pattern through ripgrep as a REGEX (`opts.regex`) or, by default, as a fixed
     -- string; the marks in the rows and the preview must read it the same way (see `preview_matches`).
@@ -1231,7 +1232,32 @@ build = function(opts, kind)
                             it.match_bytes = #bytes > 0 and bytes or nil
                         end
                     end
-                    if it.match_bytes == nil and q and q ~= "" then
+                    if it.match_bytes == nil and q and q ~= "" and opts.grep and state.grep_mode == "filter" then
+                        -- a grep FILTER marks the query in the part its SCOPE reads
+                        local sc = state.grep_scope or (config or {}).grep_scope or "line"
+                        local path, loc, body = scope.split(it.text or "")
+                        if path and sc == "line" then
+                            local m = fuzzy.match_terms(q, body)
+                            if m then
+                                local off = vim.fn.strchars(loc)
+                                for k, ci in ipairs(m) do
+                                    m[k] = ci + off
+                                end
+                            end
+                            it.match = m
+                        elseif path and sc == "path" then
+                            it.match = fuzzy.match_terms(q, path)
+                        elseif path and sc == "file" then
+                            local bytes = {}
+                            for _, t in ipairs(scope.terms(q)) do
+                                for _, r in ipairs(preview_matches({ body }, t.text, false)) do
+                                    bytes[#bytes + 1] = { c0 = #loc + r.c0, c1 = #loc + r.c1 }
+                                end
+                            end
+                            it.match_bytes = #bytes > 0 and bytes or nil
+                        end
+                    end
+                    if it.match_bytes == nil and it.match == nil and q and q ~= "" then
                         -- through the shared term matcher, so a multi-term query lights up EVERY term (the
                         -- filter and the highlight must agree on what matched). `match_display` is name-focused
                         -- when `filename_match` is on and this row's NAME matches (so the highlight agrees with
@@ -1331,6 +1357,9 @@ build = function(opts, kind)
                 -- (grep) Ctrl-g toggles GREP ⇄ FILTER mode from the normal-mode list too.
                 if grep_toggle then
                     map(keylist(kcfg.grep_filter), grep_toggle)
+                end
+                if scope_toggle then
+                    map(keylist(kcfg.grep_scope), scope_toggle)
                 end
                 -- Swap the finder's backend (tint ⇄ fzf) from the normal list — command finders only.
                 if opts.reopen then
@@ -1733,6 +1762,51 @@ build = function(opts, kind)
         end
         return out
     end
+    --- A grep FILTER over `blob`, reading the part `state.grep_scope` names (see lvim-picker.scope): "line" /
+    --- "path" rank a DERIVED blob of just that part (same order, so indices map back to the original rows, which
+    --- are what render); "file" keeps the rows whose file holds the query. Same callback shape as blob_filter.
+    ---@param blob LvimFuzzyBlob
+    ---@param q string
+    ---@param cb fun(list: { idx: integer, text: string }[], total: integer)
+    local function scoped_filter(blob, q, cb)
+        local sc = state.grep_scope or (config or {}).grep_scope or "line"
+        if q == "" then
+            return fuzzy.blob_filter(blob, q, cb) -- nothing typed: every row, as loaded
+        end
+        if sc == "file" then
+            local max = (require("lvim-picker.fuzzy.config") or {}).max_results or 1000
+            local list, total = scope.file_filter(blob, q, max)
+            cb(list, total)
+            return
+        end
+        state.scope_blobs = state.scope_blobs or {}
+        local n = fuzzy.blob_count(blob)
+        local d = state.scope_blobs[sc]
+        if not d or d.src ~= blob or d.n ~= n then
+            if d then
+                fuzzy.blob_free(d.blob)
+            end
+            local nb = scope.derive(blob, sc)
+            if not nb then
+                return fuzzy.blob_filter(blob, q, cb) -- no blob support: the whole row
+            end
+            d = { blob = nb, src = blob, n = n }
+            state.scope_blobs[sc] = d
+        end
+        fuzzy.blob_filter(d.blob, q, function(list, total)
+            for _, r in ipairs(list) do
+                r.text = fuzzy.blob_text(blob, r.idx) or r.text -- render the ORIGINAL row
+            end
+            cb(list, total)
+        end)
+    end
+    --- Free the derived scope blobs (a new grep run, or close).
+    local function free_scope_blobs()
+        for _, d in pairs(state.scope_blobs or {}) do
+            fuzzy.blob_free(d.blob)
+        end
+        state.scope_blobs = nil
+    end
     -- A generation guard so a slow async source/filter callback for an OLD query can't overwrite a newer one.
     local refilter_gen = 0
     --- Re-run the filter (static list) or live source for query `q`, then push the ranked results to the UI.
@@ -1801,10 +1875,10 @@ build = function(opts, kind)
                 end
                 return
             end
-            -- FILTER mode: fuzzy-filter the FROZEN blob (rg not re-run).
+            -- FILTER mode: fuzzy-filter the FROZEN blob (rg not re-run), reading the part the SCOPE names.
             state.live_query = state.query
             if state.blob then
-                fuzzy.blob_filter(state.blob, state.query, function(list, total)
+                scoped_filter(state.blob, state.query, function(list, total)
                     if mygen == refilter_gen then
                         state.match_total = total
                         apply(blob_rows(list), light)
@@ -1891,6 +1965,8 @@ build = function(opts, kind)
             if state.blob then
                 fuzzy.blob_free(state.blob) -- a new query = a new candidate set → reclaim the old pool eagerly
             end
+            free_scope_blobs()
+            scope.reset() -- files may have changed since the last run
             state.blob = fuzzy.blob_new()
             state.src_cache = {} -- native index → derived `_src` (indices restart at 1 for the fresh blob)
             state.pool_n, state.grep_total, state.grep_query = 0, 0, query
@@ -1979,6 +2055,17 @@ build = function(opts, kind)
                 state.update_mode() -- reflect the mode in the title indicator + the search-bar badge
             end
             refilter(state.query)
+        end
+        --- Ctrl-s: cycle what the FILTER reads in each result — the line's text → the path → the whole file
+        --- (lvim-picker.scope). Applies at once in FILTER mode; in GREP mode it is remembered for the next filter.
+        scope_toggle = function()
+            state.grep_scope = scope.next(state.grep_scope or (config or {}).grep_scope or "line")
+            if state.update_mode then
+                state.update_mode()
+            end
+            if state.grep_mode == "filter" then
+                refilter(state.query)
+            end
         end
         -- `grep_stop` is called from on_close too; expose it via state so the teardown reaches it.
         state.grep_stop = grep_stop
@@ -2151,6 +2238,9 @@ build = function(opts, kind)
         if opts.grep and opts.grep.live then
             hints[#hints + 1] = { key = klabel(kcfg.grep_filter), name = "grep⇄filter" }
         end
+        if opts.grep then
+            hints[#hints + 1] = { key = klabel(kcfg.grep_scope), name = "filter scope" }
+        end
         -- ONE name in both contexts: `C-f` is a FOCUS toggle (prompt ⇄ list), not two separate commands. Naming it
         -- after its destination ("list" / "type") read as if the picker had two different keys there.
         hints[#hints + 1] = { key = "C-f", name = "focus" }
@@ -2285,12 +2375,14 @@ build = function(opts, kind)
     -- (grep, live only) the Ctrl-g MODE indicator: the TITLE gains "➤ filter" AND the SEARCH BAR badge swaps to
     -- the filter badge while rg is frozen (the query fuzzy-filters the loaded results). Applied live via
     -- `set_title` + `set_prompt` (an IN-PLACE repaint — the query text, cursor and on_change are untouched).
-    if opts.grep and opts.grep.live then
+    if opts.grep then
         state.update_mode = function()
             if not (state.st and state.st.set_title) then
                 return
             end
-            local suffix = (state.grep_mode == "filter") and " ➤ Filter" or ""
+            -- FILTER mode names what the filter reads (the scope): "Grep ➤ Filter · line"
+            local sc = state.grep_scope or (config or {}).grep_scope or "line"
+            local suffix = (state.grep_mode == "filter") and (" ➤ Filter · " .. sc) or ""
             state.st.set_title({
                 icon = opts.icon,
                 text = (opts.title or "Grep") .. suffix,
@@ -2299,7 +2391,7 @@ build = function(opts, kind)
                     text = { hl = hl("title", "LvimUiPeekTitle") },
                 },
             })
-            if state.st.set_prompt and not opts.prompt then -- swap the search-bar badge to match the mode
+            if opts.grep.live and state.st.set_prompt and not opts.prompt then -- swap the search-bar badge to match the mode
                 state.st.set_prompt(build_prompt(state.grep_mode), prompt_hl, input_hl)
             end
         end
@@ -2438,6 +2530,10 @@ build = function(opts, kind)
                     keys = function(buf, st)
                         state.st = st
                         state.input_buf = buf -- so NORMAL-mode list can jump back to typing (focus_input)
+                        -- a fixed-query grep opens in FILTER mode: show its scope in the title from the start
+                        if opts.grep and state.grep_mode == "filter" and state.update_mode then
+                            vim.schedule(state.update_mode)
+                        end
                         -- the typed-text caret (config.caret) — same as the fzf finder. Through the
                         -- cursor module so it coexists with cursor-hiding; cleared on close.
                         pcall(require("lvim-utils.cursor").mark_cursor_buffer, buf, source.caret_fragment("i-ci-ve"))
@@ -2471,6 +2567,11 @@ build = function(opts, kind)
                         if grep_toggle then
                             for _, k in ipairs(keylist(kcfg.grep_filter)) do
                                 imap(k, grep_toggle)
+                            end
+                        end
+                        if scope_toggle then
+                            for _, k in ipairs(keylist(kcfg.grep_scope)) do
+                                imap(k, scope_toggle)
                             end
                         end
                         -- Swap the finder's backend (tint ⇄ fzf) while typing — command finders only.
@@ -2539,6 +2640,12 @@ build = function(opts, kind)
                 pcall(state.grep_stop)
             end
             release_run(state, items) -- drop THIS run's cached candidate texts + prepared fuzzy context (not another live finder's)
+            if state.scope_blobs then -- the derived grep-scope pools
+                for _, d in pairs(state.scope_blobs) do
+                    fuzzy.blob_free(d.blob)
+                end
+                state.scope_blobs = nil
+            end
             if state.blob then -- free the native blob-stream pool (a huge tree's SoA reclaimed eagerly)
                 fuzzy.blob_free(state.blob)
                 state.blob = nil
