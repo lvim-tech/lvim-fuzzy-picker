@@ -24,6 +24,7 @@ local HELP = {
     { "preview_down", "scroll the preview down" },
     { "preview_up", "scroll the preview up" },
     { "grep_filter", "live grep: toggle GREP ⇄ FILTER" },
+    { "grep_scope", "grep filter: scope line → path → file" },
     { "swap_backend", "swap the backend (list ⇄ fzf TUI)" },
     { "park", "park the finder (focus the editor, stay open)" },
     { "nav", "move the selection" },
