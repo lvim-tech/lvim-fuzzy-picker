@@ -9,8 +9,8 @@ look and one set of keys, and docks as a centred float, a bottom dock, or the me
 
 Requires **Neovim >= 0.12.x**, [lvim-utils](https://github.com/lvim-tech/lvim-utils),
 [lvim-ui](https://github.com/lvim-tech/lvim-ui) and [lvim-fuzzy](https://github.com/lvim-tech/lvim-fuzzy)
-(the shared matching engine — its optional native library makes ranking fastest, and it degrades to its own
-pure-Lua matcher on its own). The fzf-TUI backend needs the `fzf` binary (and `mkfifo`);
+(the shared matching engine — lvim-fuzzy-core, the same as the terminal finder; its native library is
+required). The fzf-TUI backend needs the `fzf` binary (and `mkfifo`);
 without it the finders fall back to the Lua tint list. Optional:
 [lvim-hud](https://github.com/lvim-tech/lvim-hud) (statusline title overlay) and
 [lvim-msgarea](https://github.com/lvim-tech/lvim-msgarea) (the `area` dock in the message zone).
@@ -69,10 +69,16 @@ one and the cheatsheet follows). It works in BOTH backends (the tint list and th
 
 ## The query
 
-A **space separates TERMS** — the fzf convention. `conf ui` means "matches `conf` **and** matches `ui`", in any
-order; each term is matched fuzzily on its own and every term's characters are highlighted. A query with no
-space is a single term, and a trailing space changes nothing (`conf ` still searches for `conf`) — typing a
-space can never blank the result list.
+The query is **fzf's extended syntax**, searched by lvim-fuzzy-core — the same engine as the terminal finder,
+so a query ranks the same in both:
+
+- a **space separates TERMS**: `conf ui` means "matches `conf` **and** matches `ui`", in any order; a trailing
+  space changes nothing;
+- `'exact` an exact substring, `^src` a prefix, `.lua$` a suffix, `!test` a negation, `lua | rs` either;
+- **smart case**: lower case folds, an upper-case letter (in any script) is kept;
+- Latin letters match their accented forms (`cafe` finds `café`).
+
+Every occurrence of every term is highlighted.
 
 This holds for both matching paths: the in-memory finders and the streamed (blob) ones. A **live grep** is a
 different thing — there the query is handed to ripgrep, which has its own syntax.
@@ -345,11 +351,11 @@ require("lvim-picker").setup({
     fuzzy = {
         sort = "score", -- ordering: "score" | a list of sort keys | a function
         max_results = 1000, -- cap on ranked results (lvim-fuzzy's own max_results also applies)
-        -- FILENAME BIAS (tint backend). Fuzzy matching is a subsequence match against the WHOLE path, so
+        -- FILENAME BIAS (tint backend). Fuzzy matching runs against the WHOLE path, so
         -- `vgit.lua` also matches every `.lua` file under a `…-git/` dir (`git` from the dir, `.lua` from the
         -- extension). This biases toward the file NAME:
         --   "boost"  — (default) rows whose NAME matches rank above path-only matches (which still show below);
-        --              a name match = every query term is a subsequence of the basename; its highlight is drawn
+        --              a name match = the query matches the basename on its own; its highlight is drawn
         --              on the name, not a dir+extension scatter. (Contiguity still wins WITHIN a bucket.)
         --   "strict" — only name matches are kept; the directory path is a tiebreak only.
         --   "off"    — no bias: whole-path fuzzy (exact fzf parity).

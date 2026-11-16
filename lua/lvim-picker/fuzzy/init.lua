@@ -1,18 +1,18 @@
 -- lvim-picker.fuzzy: shared fuzzy MATCHING engine: rank a list of strings against a query. The engine is
--- lvim-fuzzy — the shared native matcher of the lvim-tech set (in-process Rust FFI, with its own
--- byte-identical pure-Lua fallback when the .so is absent, so this module never branches on availability).
+-- lvim-fuzzy — lvim-fuzzy-core in-process through FFI, the same engine as the terminal finder, so a query
+-- ranks the same in both. The query goes to the engine WHOLE, in fzf's syntax (spaces = AND, `'x`, `^x`,
+-- `x$`, `!x`, `a | b`, smart case).
 -- The candidate set is PREPARED once per pool (one packed upload, cached by array reference + length) and
 -- a stream-grown pool APPENDS only its new tail into the live context (incremental, O(new) — never a whole
--- re-prepare); every keystroke is then a single match call that is O(matched), not O(candidates) — this
--- replaced the per-keystroke `fzf --filter` subprocess that re-scanned the whole set (76–790 ms at 200k–1.5M).
--- lvim-fuzzy returns indices + scores only, so match POSITIONS for highlighting are computed locally
--- (utils.match_indices) — but only for the top `max_results` rows actually returned, never the whole set.
+-- re-prepare); every keystroke is then a single match call (narrowed natively from the previous result
+-- while the query only grows).
+-- Match POSITIONS for highlighting come from the engine too (`highlights`), only for the top `max_results`
+-- rows actually returned, never the whole set.
 -- Used by the picker and by the native cmdline-completion integration (lvim-msgarea), so both share one
 -- engine/ranking.
 --
 ---@module "lvim-picker.fuzzy"
 
-local utils = require("lvim-utils.utils")
 local config = require("lvim-picker.fuzzy.config")
 local engine = require("lvim-fuzzy")
 
@@ -102,10 +102,10 @@ end
 -- set does NOT, so the context is rebuilt only when the pool actually changes — appended by a stream feed
 -- (same reference, grown length), replaced by a refresh, or narrowed by a filter (new reference)). Over a
 -- stable pool a keystroke is therefore ONE match call against the ready context, never a re-upload. A pool
--- that GREW in place feeds ONLY the new tail into the live context (`engine.append`, ABI 2 — O(new), sub-ms
+-- that GREW in place feeds ONLY the new tail into the live context (`engine.append` — O(new), sub-ms
 -- even at 1.5M) instead of re-preparing the whole set (~130–200 ms per growth there); the context is still
 -- built lazily on the first real query, so a stream that finishes before typing pays one prepare, and typing
--- WHILE it feeds pays only appends. Append is byte-identical to a whole prepare (lvim-fuzzy guarantee).
+-- WHILE it feeds pays only appends. Append is the same as a whole prepare (lvim-fuzzy guarantee).
 ---@type { texts: string[], len: integer, ctx: LvimFuzzyContext }?
 local _ctx_cache
 
@@ -124,6 +124,8 @@ local _marshal_timer
 local _last_query -- last non-empty query + its callback, replayed once when the background marshal catches up
 ---@type fun(ranked: { idx: integer, match?: integer[] }[])?
 local _last_cb
+---@type LvimFuzzyOpts?
+local _last_opts
 
 --- Stop and release the background catch-up timer (if running).
 local function stop_marshal()
@@ -195,7 +197,7 @@ local function arm_marshal(texts)
             if settled >= 2 then -- pool has held steady ⇒ stream finished → one final full-context match
                 stop_marshal()
                 if _last_query and _last_query ~= "" and _last_cb then
-                    M.filter(texts, _last_query, _last_cb)
+                    M.filter(texts, _last_query, _last_cb, _last_opts)
                 end
             end
         end)
@@ -217,31 +219,25 @@ local function ensure_ctx(texts)
             return c.ctx
         end
         -- The pool GREW in place (stream feed — same array ref, larger length): extend the live context with
-        -- a bounded slice of the new tail now, and let the background timer feed the rest. Gated on real
-        -- incrementality: the native ABI-2 append, or the pure-Lua backend (which keeps no per-candidate
-        -- state, so growing the list IS the append). An ABI-1 .so would only defer a whole re-upload into the
-        -- next match call, so it re-prepares below instead.
-        if engine.has_append() or not engine.native_loaded() then
-            if not marshal_slice(c) then
-                arm_marshal(texts) -- tail remains → catch up in the background
-            end
-            return c.ctx
+        -- a bounded slice of the new tail now, and let the background timer feed the rest.
+        if not marshal_slice(c) then
+            arm_marshal(texts) -- tail remains → catch up in the background
         end
-        -- shrank (a new pool reused the array — not the stream contract) or no incremental append → rebuild
+        return c.ctx
     end
     -- New / replaced pool: prepare only the first `marshal_cap` now (bounded — a whole prepare over millions
-    -- would block); the background timer appends the rest. The context OWNS its candidate list (`engine.append`
-    -- grows it in place), while `texts` is the picker's pool cache that ALSO grows in place — hand the engine
-    -- its own shallow copy, never the shared array (sharing it would make the engine-side append double-write
-    -- the tail into the picker's pool).
+    -- would block); the background timer appends the rest. The replaced pool's native context is freed now.
     stop_marshal()
+    if c then
+        engine.free(c.ctx)
+    end
     local cap = (config or {}).marshal_cap or 32768
     local upto = math.min(n, cap)
-    local owned = {}
+    local head = {}
     for i = 1, upto do
-        owned[i] = texts[i]
+        head[i] = texts[i]
     end
-    local ctx = engine.prepare(owned)
+    local ctx = engine.prepare(head)
     _ctx_cache = { texts = texts, len = upto, ctx = ctx }
     if upto < n then
         arm_marshal(texts)
@@ -249,77 +245,51 @@ local function ensure_ctx(texts)
     return ctx
 end
 
---- Split a query into its whitespace-separated TERMS (fzf's AND semantics). A query with no whitespace is one
---- term; trailing / repeated spaces collapse, so "ini " is still the single term "ini" (typing a space mid-word
---- must not blank the list).
+--- Whether a query has anything to search for ("" and whitespace alone are the whole pool, unranked).
 ---@param query string
----@return string[]
-local function query_terms(query)
-    local out = {}
-    for t in tostring(query or ""):gmatch("%S+") do
-        out[#out + 1] = t
-    end
-    return out
+---@return boolean
+local function has_query(query)
+    return tostring(query or ""):find("%S") ~= nil
 end
 
---- The BASENAME match of `text` for `terms`: 0-based positions (union of every term), OFFSET into full-path
---- coordinates so a highlight lands on the name in the whole path — or nil when ANY term is not a subsequence
---- of the basename (the segment after the last "/"). Tested on the name ALONE, so a candidate whose NAME
---- matches counts even when the whole-path engine aligned across the directory (e.g. `blame.lua` "matches"
---- `vgit.lua` only via the dir `git` + the `.lua` extension → nil here). Shared by the ranking bias AND the
---- display highlight so they always agree on "name match". This is a PATH concern, hence Lua-side, never in
---- the generic lvim-fuzzy scorer.
----@param terms string[]
+--- The BASENAME match of `text` for `query`: 0-based character positions OFFSET into full-path coordinates
+--- so a highlight lands on the name in the whole path — or nil when the query does not match the basename
+--- (the segment after the last "/") on its own. Tested on the name ALONE, so a candidate whose NAME matches
+--- counts even when the whole-path engine aligned across the directory (e.g. `blame.lua` "matches" `vgit.lua`
+--- only via the dir `git` + the `.lua` extension → nil here). Shared by the ranking bias AND the display
+--- highlight so they always agree on "name match". This is a PATH concern, hence here, never in the engine.
+---@param query string
 ---@param text string
+---@param opts? LvimFuzzyOpts
 ---@return integer[]|nil
-local function basename_positions(terms, text)
+local function basename_positions(query, text, opts)
     local slash = text:find("/[^/]*$") -- 1-based BYTE index of the last "/" (nil = no directory part)
     local base = text:sub((slash or 0) + 1)
-    -- `match_indices` yields 0-based CHAR positions, so the lift into path coordinates must be the CHAR
-    -- count of the directory part (its byte length overshoots as soon as the path holds a multibyte
-    -- character: every highlight then landed past the name, or fell off the row entirely).
-    local off = 0
+    local bm = engine.highlights(base, query, opts) -- 0-based CHAR positions within the basename, or nil
+    if not bm then
+        return nil
+    end
+    -- the lift into path coordinates is the CHAR count of the directory part (its byte length overshoots as
+    -- soon as the path holds a multibyte character)
     if slash then
-        local _, n = text:sub(1, slash):gsub("[^\128-\191]", "")
-        off = n
-    end
-    local hits = {}
-    for _, t in ipairs(terms) do
-        local bm = utils.match_indices(t, base) -- 0-based positions within the basename, or nil
-        if not bm then
-            return nil
-        end
-        for _, ci in ipairs(bm) do
-            hits[ci + off] = true
+        local off = vim.fn.strchars(text:sub(1, slash))
+        for k, ci in ipairs(bm) do
+            bm[k] = ci + off
         end
     end
-    local out = {}
-    for ci in pairs(hits) do
-        out[#out + 1] = ci
-    end
-    table.sort(out)
-    return out
+    return bm
 end
 
 --- Order the NAME-match rows by how well the query matches the NAME itself — NOT the whole path. Without this
 --- the bucket keeps the engine's whole-path order, so a contiguous name match (`vgit.lua`) buried in a long
 --- path loses to a SCATTERED name match (`lvim-git.txt`) whose short path merely scored higher end-to-end. The
---- basenames are re-scored by the engine (the longest term drives it, like the main match); the whole-path
---- order is the stable tiebreak among equal name scores.
+--- basenames are re-scored by the engine; the whole-path order is the stable tiebreak among equal name scores.
 ---@param named table[]  the name-match rows (reordered in place)
----@param terms string[]
+---@param query string
 ---@param text_of fun(r: table): string  a row's full path
-local function order_by_name(named, terms, text_of)
+---@param opts? LvimFuzzyOpts
+local function order_by_name(named, query, text_of, opts)
     if #named < 2 then
-        return
-    end
-    local needle = ""
-    for _, t in ipairs(terms) do
-        if #t > #needle then
-            needle = t
-        end
-    end
-    if needle == "" then
         return
     end
     local bases = {}
@@ -329,7 +299,7 @@ local function order_by_name(named, terms, text_of)
         bases[i] = text:sub((slash or 0) + 1)
     end
     local score = {}
-    for _, e in ipairs(engine.filter(bases, needle) or {}) do
+    for _, e in ipairs(engine.filter(bases, query, opts) or {}) do
         score[e.index] = e.score
     end
     local order = {}
@@ -349,33 +319,34 @@ end
 
 --- Bias ENGINE-ranked rows toward FILENAME matches (`config.filename_match`). ORTHOGONAL to the engine's
 --- contiguity scoring: within either bucket the engine order is preserved, so a contiguous name still beats a
---- scattered one. A name match's highlight is recomputed on the basename so the NAME lights up, not a dir +
---- extension scatter.
+--- scattered one. `pos_of(r, m)` receives a name match's basename positions (to light up the NAME).
 ---   "boost" (default): name matches first, then the path-only matches (still shown, below).
----   "strict":          only name matches kept; the directory path is left as the existing tiebreak.
+---   "strict":          only name matches kept.
 ---   "off":             no bias — whole-path fuzzy (fzf parity).
----@param out { idx: integer, match?: integer[] }[]  engine-ranked rows
----@param terms string[]  the query's AND-terms
----@param texts string[]  the candidate pool
----@return { idx: integer, match?: integer[] }[]
-local function filename_bias(out, terms, texts)
+---@param out table[]  engine-ranked rows
+---@param query string
+---@param text_of fun(r: table): string
+---@param pos_of? fun(r: table, m: integer[])
+---@param opts? LvimFuzzyOpts
+---@return table[]
+local function filename_bias(out, query, text_of, pos_of, opts)
     local mode = (config or {}).filename_match or "boost"
-    if mode == "off" or #out == 0 or #terms == 0 then
+    if mode == "off" or #out == 0 or not has_query(query) then
         return out
     end
     local named, rest = {}, {}
     for _, r in ipairs(out) do
-        local m = basename_positions(terms, texts[r.idx] or "")
+        local m = basename_positions(query, text_of(r) or "", opts)
         if m then
-            r.match = m
+            if pos_of then
+                pos_of(r, m)
+            end
             named[#named + 1] = r
         else
             rest[#rest + 1] = r
         end
     end
-    order_by_name(named, terms, function(r)
-        return texts[r.idx] or ""
-    end)
+    order_by_name(named, query, text_of, opts)
     if mode == "strict" then
         return named
     end
@@ -387,16 +358,17 @@ end
 
 --- Rank `texts` against `query`. `cb` receives a list of `{ idx, match? }` in ranked order — `idx` is the
 --- 1-based index into `texts`, `match` the 0-based matched-char indices (for highlighting; absent on an
---- empty query). Empty query = the first `max_results` in source order, no match. The match itself is a
---- single in-process lvim-fuzzy call, so `cb` is invoked synchronously (the callback signature is kept for
---- the callers wired to the old async engine).
+--- empty query). Empty query = the first `max_results` in source order, no match. The query goes to the
+--- engine WHOLE, in fzf's syntax (spaces = AND, `'x`, `^x`, `x$`, `!x`, `a | b`); `cb` fires on a later tick.
+--- `opts` (optional) overrides the engine's search options, e.g. `{ extended = false }` for a completion
+--- where the typed text is one literal word.
 ---@param texts string[]
 ---@param query string
 ---@param cb fun(ranked: { idx: integer, match?: integer[] }[])
-function M.filter(texts, query, cb)
+---@param opts? LvimFuzzyOpts
+function M.filter(texts, query, cb, opts)
     -- Hard cap on materialised results (config.max_results): the engine still SEARCHES all candidates, but
-    -- only the top `max` are handed back, so a broad / empty query over a huge tree never builds hundreds of
-    -- thousands of rows on a keystroke. (lvim-fuzzy applies its own `max_results` too — the effective cap is
+    -- only the top `max` are handed back. (lvim-fuzzy applies its own `max_results` too — the effective cap is
     -- the smaller of the two.)
     local max = (config or {}).max_results or 1000
     -- every path delivers through here so the config sort (dirs_first / ext / …) is applied uniformly
@@ -405,8 +377,7 @@ function M.filter(texts, query, cb)
             return texts[r.idx]
         end))
     end
-    if #query_terms(query) == 0 then
-        -- "" or only spaces — the same thing: the whole pool, unranked
+    if not has_query(query) then
         _last_query, _last_cb = nil, nil -- an empty query needs no full-pool replay when the marshal catches up
         local out = {}
         for i = 1, math.min(#texts, max) do -- first `max` in source order (no matching on an empty query)
@@ -418,75 +389,25 @@ function M.filter(texts, query, cb)
     -- Remember this query so the background marshal can replay it once the native context reaches the full pool
     -- (see arm_marshal) — otherwise a query typed mid-stream would keep showing head-only results until the
     -- next keystroke. `cb` is the finder's gen-guarded refilter callback, so a stale replay is dropped safely.
-    _last_query, _last_cb = query, cb
-    -- ASYNC: the match is driven in slices across event-loop ticks (lvim-fuzzy's chunked ABI-3 path), so a
-    -- match over a HUGE pool never blocks typing — the editor redraws and handles input between slices, and a
-    -- newer query SUPERSEDES an in-flight one engine-side. `cb` fires on a later tick (the finder's `refilter`
-    -- is already gen-guarded, and the callers were wired for the original async engine). On an ABI < 3 / Lua
-    -- backend it degrades to a scheduled synchronous match. Positions are computed for the returned top rows
-    -- only (~max_results — cheap), never over the whole candidate set.
-    -- WHITESPACE = AND (the fzf convention every picker user expects): "conf ui" means "matches `conf` AND
-    -- matches `ui`", in any order — not the literal string "conf ui", which as a subsequence needs a real space
-    -- in the path and therefore matched NOTHING (typing a space wiped the result list). The engine takes ONE
-    -- needle, so the most SELECTIVE term (the longest) drives it and the rest AND-filter its rows here; the
-    -- highlight is the union of every term's positions. Single-term queries take the plain path unchanged.
-    local terms = query_terms(query)
-    if #terms > 1 then
-        local lead = terms[1]
-        for _, t in ipairs(terms) do
-            if #t > #lead then
-                lead = t
-            end
-        end
-        engine.match_async(lead, ensure_ctx(texts), function(results, cnt)
-            local out = {}
-            for k = 1, cnt do
-                if #out >= max then
-                    break
-                end
-                local idx = results[k].index
-                local text = texts[idx]
-                local hits, ok = {}, true
-                for _, t in ipairs(terms) do
-                    local m = utils.match_indices(t, text)
-                    if not m then
-                        ok = false
-                        break
-                    end
-                    for _, ci in ipairs(m) do
-                        hits[ci] = true
-                    end
-                end
-                if ok then
-                    local match = {}
-                    for ci in pairs(hits) do
-                        match[#match + 1] = ci
-                    end
-                    table.sort(match)
-                    out[#out + 1] = { idx = idx, match = match }
-                end
-            end
-            deliver(filename_bias(out, terms, texts))
-        end)
-        return
-    end
-
-    -- ONE term: the needle is the TERM, not the raw query — "ini " (a space typed mid-thought) must search for
-    -- "ini", not for the literal "ini " (which no path contains, so the list went blank on the space).
-    local needle = terms[1]
-    engine.match_async(needle, ensure_ctx(texts), function(results, cnt)
+    _last_query, _last_cb, _last_opts = query, cb, opts
+    -- Positions are computed for the returned top rows only (≤ max_results), never over the whole set.
+    engine.match_async(query, ensure_ctx(texts), function(results, cnt)
         local out = {}
         for k = 1, math.min(cnt, max) do
             local idx = results[k].index
-            out[k] = { idx = idx, match = utils.match_indices(needle, texts[idx]) }
+            out[k] = { idx = idx, match = engine.highlights(texts[idx], query, opts) }
         end
-        deliver(filename_bias(out, terms, texts))
-    end)
+        deliver(filename_bias(out, query, function(r)
+            return texts[r.idx]
+        end, function(r, m)
+            r.match = m
+        end, opts))
+    end, opts)
 end
 
 --- Drop the cached prepared context. A finder calls this on close so the packed candidate blob (large at
 --- huge-tree scale) does not linger in this module until the next search replaces it — `engine.free` also
---- releases the NATIVE side eagerly (ABI 2), so ~60–100 MB of prepared context is reclaimed on close instead
+--- releases the NATIVE side eagerly, so ~60–100 MB of prepared context is reclaimed on close instead
 --- of lingering until another search re-prepares.
 --- With `texts` given, only the context prepared for THAT candidate array is dropped — a finder closing while
 --- another is live must not free the live one's context (the cache is one module-level slot).
@@ -515,10 +436,10 @@ end
 -- string-intern + GC pauses of a ~2M-candidate pool). The candidate POOL lives entirely native; only the
 -- ranked top-K rows are ever materialised on the Lua side. These thin wrappers expose the engine's blob API
 -- to the picker's `build()` and layer the config sort + result cap on top of the raw match — the blob analog
--- of `M.filter`. All gated on `M.has_blob()`; an older .so keeps the current per-string path.
+-- of `M.filter`. All gated on `M.has_blob()`.
 
---- Whether the native library supports blob ingestion (ABI ≥ 5). When false, the finders keep the per-string
---- streaming path.
+--- Whether the native library is loaded (blob ingestion comes with it). When false, the finders keep the
+--- per-string streaming path.
 ---@return boolean
 function M.has_blob()
     return engine.has_blob()
@@ -566,131 +487,68 @@ function M.blob_free(blob)
     engine.blob_free(blob)
 end
 
---- The matched-char indices of `text` for a (possibly multi-TERM) query — the union of every term's positions,
---- or nil when any term fails. The one place the picker's highlight and its filtering agree on what "matched"
---- means, so a space in the query lights up both words instead of nothing.
+--- The matched-char indices of `text` for a query (0-based characters: the alignment plus every other
+--- occurrence of each term), or nil when it does not match. The one place the picker's highlight and its
+--- filtering agree on what "matched" means — both are the engine's.
 ---@param query string
 ---@param text string
 ---@return integer[]|nil
 function M.match_terms(query, text)
-    local terms = query_terms(query)
-    if #terms == 0 then
+    if not has_query(query) then
         return nil
     end
-    if #terms == 1 then
-        return utils.match_indices(terms[1], text)
-    end
-    local hits = {}
-    for _, t in ipairs(terms) do
-        local m = utils.match_indices(t, text)
-        if not m then
-            return nil
-        end
-        for _, ci in ipairs(m) do
-            hits[ci] = true
-        end
-    end
-    local out = {}
-    for ci in pairs(hits) do
-        out[#out + 1] = ci
-    end
-    table.sort(out)
-    return out
+    return engine.highlights(text, query)
 end
 
 --- Rank `blob` against `query` and hand the ranked results (`{ idx, text }`, `idx` = the 1-based NATIVE
 --- candidate index, `text` materialised for rendering / sorting) to `cb`, plus `total` = the TRUE number of
---- candidates that matched (before the `max_results` cap; the whole pool for an empty query) so the finder can
---- show an accurate `matched/total` counter rather than the ≤`max_results` shown-row count. Applies
---- `config.max_results` and the config sort (dirs_first / ext / …). Match POSITIONS are NOT computed here — the
---- caller lights up the query chars for its VISIBLE rows only, so a broad query over a huge pool never builds
---- highlight spans for rows no one sees.
+--- candidates that matched (before the `max_results` cap; the whole pool for an empty query). Applies
+--- `config.max_results`, the filename bias and the config sort. `opts.scope` = what a grep result is searched
+--- by ("line" / "path" / "file", see lvim-picker.scope). Match POSITIONS are NOT computed here — the caller
+--- lights up its VISIBLE rows only.
 ---@param blob LvimFuzzyBlob
 ---@param query string
 ---@param cb fun(list: { idx: integer, text: string }[], total: integer)
-function M.blob_filter(blob, query, cb)
+---@param opts? LvimFuzzyOpts
+function M.blob_filter(blob, query, cb, opts)
     local max = (config or {}).max_results or 1000
-    -- Same AND semantics as the in-memory path (`M.filter`): whitespace separates TERMS. The blob matcher takes
-    -- ONE needle, so the most selective term (the longest) drives the native match and the rest AND-filter its
-    -- rows here. A single term is passed TRIMMED, so a trailing space cannot blank the list.
-    local terms = query_terms(query)
-    local needle = terms[1] or ""
-    for _, t in ipairs(terms) do
-        if #t > #needle then
-            needle = t
-        end
-    end
-    engine.blob_match(blob, needle, function(results, cnt, total)
+    engine.blob_match(blob, has_query(query) and query or "", function(results, cnt, total)
         local ranked = {}
-        for k = 1, cnt do
-            if #ranked >= max then
-                break
-            end
+        for k = 1, math.min(cnt, max) do
             local idx = results[k].index
-            local text = engine.blob_text(blob, idx) or ""
-            local ok = true
-            if #terms > 1 then
-                for _, t in ipairs(terms) do
-                    if not utils.match_indices(t, text) then
-                        ok = false
-                        break
-                    end
-                end
-            end
-            if ok then
-                ranked[#ranked + 1] = { idx = idx, text = text }
-            end
+            ranked[k] = { idx = idx, text = engine.blob_text(blob, idx) or "" }
         end
-        -- Same FILENAME BIAS as the per-string path (config.filename_match): rows whose NAME matches rank above
-        -- (boost) / instead of (strict) the path-only ones. Positions are not attached here (the caller lights
-        -- up the visible rows via M.match_display, which is name-focused for the same rows), so this only
-        -- REORDERS + adjusts the strict total.
-        local mode = (config or {}).filename_match or "boost"
-        local total_out = (#terms > 1) and #ranked or (total or #ranked)
-        if mode ~= "off" and #ranked > 0 and #terms > 0 then
-            local named, rest = {}, {}
-            for _, r in ipairs(ranked) do
-                if basename_positions(terms, r.text) then
-                    named[#named + 1] = r
-                else
-                    rest[#rest + 1] = r
-                end
-            end
-            order_by_name(named, terms, function(r)
+        -- The filename bias reads a path: a grep row searched by its line or its file is not one.
+        local scoped = opts and opts.scope and opts.scope ~= "all"
+        if not scoped then
+            local n = #ranked
+            ranked = filename_bias(ranked, query, function(r)
                 return r.text
             end)
-            if mode == "strict" then
-                ranked, total_out = named, #named
-            else
-                for _, r in ipairs(rest) do
-                    named[#named + 1] = r
-                end
-                ranked = named
+            if #ranked < n then -- "strict" dropped the path-only rows
+                total = #ranked
             end
         end
         cb(
             apply_sort(ranked, function(r)
                 return r.text
             end),
-            total_out
+            total
         )
-    end)
+    end, opts)
 end
 
 --- Match positions for DISPLAY highlighting. When `filename_match` is on and `text`'s NAME matches the query,
 --- the highlight is the BASENAME positions (so the name lights up, agreeing with the ranking bias); otherwise
---- the whole-path term positions. Falls back to `match_terms` for path-only rows and when the bias is off.
+--- the whole-path positions.
 ---@param query string
 ---@param text string
 ---@return integer[]|nil
 function M.match_display(query, text)
-    if ((config or {}).filename_match or "boost") ~= "off" then
-        local terms = query_terms(query)
-        if #terms > 0 then
-            local bp = basename_positions(terms, text)
-            if bp then
-                return bp
-            end
+    if ((config or {}).filename_match or "boost") ~= "off" and has_query(query) then
+        local bp = basename_positions(query, text)
+        if bp then
+            return bp
         end
     end
     return M.match_terms(query, text)

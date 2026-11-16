@@ -24,8 +24,7 @@ keys, and docks as a centred float, a bottom dock, or the message-zone area.
 
 - Neovim >= 0.12.x
 - lvim-utils, lvim-ui and lvim-fuzzy (the shared matching engine — every finder
-  ranks through it; it degrades to its own pure-Lua matcher when its native
-  library is not built)
+  ranks through it; its native library is required)
 - the `fzf` binary (+ `mkfifo`) for the fzf-TUI backend (falls back to the Lua
   tint list without it)
 - optional: lvim-hud (statusline overlay), lvim-msgarea (the `area` dock)
@@ -150,15 +149,14 @@ counter) every `stream_refresh_ms` (default 50 ms). A multi-million-file tree
 therefore streams in smoothly — typing, moving and redraw stay responsive
 throughout the load.
 
-When the lvim-fuzzy native library supports blob ingestion (ABI >= 5, the
-default build), those finders take it further: the producer's raw stdout bytes
+With the lvim-fuzzy native library loaded, those finders take it further: the producer's raw stdout bytes
 go STRAIGHT to the native matcher (which splits on newlines itself), so the
 candidate pool never becomes a pool of Lua strings/tables — only the visible and
 top-K result rows are ever materialised (their text pulled from the native
 context by index). This removes the LuaJIT string-intern + GC pauses of a
 multi-million-candidate pool: the main thread stays essentially unblocked for the
-whole load. An older library (ABI < 5) transparently falls back to the
-per-string streaming path. Selection, `<CR>` open, preview, multi-select marks
+whole load. Without the library they fall back to the per-string streaming
+path (which still needs the library to rank). Selection, `<CR>` open, preview, multi-select marks
 and the result sort all work identically on either path.
 
                                                                 *lvim-picker-grep*
@@ -200,9 +198,7 @@ the truth) but its overflow bytes are DISCARDED in the read callback, never
 buffered → no `E41: out of memory`. `grep_max_columns` (default 512) caps each
 result line's length (rg's `--max-columns` + `--max-columns-preview`) so a minified
 / cache / log file's megabyte-long line can't blow the blob up. Confirm always
-opens the focused row at its line:col. (An ABI < 5 native library / the Lua matcher
-falls back to a bounded stream that KILLS rg at `grep_max` — the pre-Variant-B
-behaviour, `matches / total-files` counter, no `<C-g>`.) The fzf-TUI grep backend
+opens the focused row at its line:col. The fzf-TUI grep backend
 is unchanged — fzf owns its own result set and its native `<ctrl-g>`.
 
                                                              *lvim-picker-preview*

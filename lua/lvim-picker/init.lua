@@ -2,12 +2,12 @@
 -- A native fuzzy finder built on the lvim-ui.surface chassis: a centred float with a typed query
 -- INPUT band on top (a surface header input), a results LIST panel on the left and a scrollable PREVIEW
 -- panel on the right — the diagnostics-peek layout, but fuzzy. The MATCHING ENGINE is lvim-fuzzy — the
--- shared native matcher of the lvim-tech set (in-process FFI; its own pure-Lua fallback when the .so is
--- absent): the candidate set is prepared once per pool (a stream-grown pool appends only its tail), each
--- keystroke is one match call, and the surface renders the result. So ranking is lvim-fuzzy's exactly while
--- WE own the view (engine vs view, like the blink integration). Highlight positions are computed locally
--- (lvim-utils.utils.match_indices — the engine emits indices+scores only), so the matched characters light
--- up in the list. The LIST is viewport-virtualized: the buffer holds only the visible window of rows, so a
+-- shared native engine of the lvim-tech set (lvim-fuzzy-core in-process through FFI, the same as the
+-- terminal finder; fzf's query syntax): the candidate set is prepared once per pool (a stream-grown pool
+-- appends only its tail), each keystroke is one match call, and the surface renders the result. So ranking
+-- is lvim-fuzzy's exactly while WE own the view (engine vs view, like the blink integration). Highlight
+-- positions come from the engine too, for the visible rows only, so the matched characters light up in the
+-- list. The LIST is viewport-virtualized: the buffer holds only the visible window of rows, so a
 -- render is O(viewport) at any scale (see the viewport block in `build`).
 --
 ---@module "lvim-picker"
@@ -1762,50 +1762,15 @@ build = function(opts, kind)
         end
         return out
     end
-    --- A grep FILTER over `blob`, reading the part `state.grep_scope` names (see lvim-picker.scope): "line" /
-    --- "path" rank a DERIVED blob of just that part (same order, so indices map back to the original rows, which
-    --- are what render); "file" keeps the rows whose file holds the query. Same callback shape as blob_filter.
+    --- A grep FILTER over `blob`, reading the part `state.grep_scope` names (see lvim-picker.scope): the
+    --- engine searches "line" / "path" in that part of each row and "file" in the row's file (every term
+    --- exact). Same callback shape as blob_filter.
     ---@param blob LvimFuzzyBlob
     ---@param q string
     ---@param cb fun(list: { idx: integer, text: string }[], total: integer)
     local function scoped_filter(blob, q, cb)
         local sc = state.grep_scope or (config or {}).grep_scope or "line"
-        if q == "" then
-            return fuzzy.blob_filter(blob, q, cb) -- nothing typed: every row, as loaded
-        end
-        if sc == "file" then
-            local max = (require("lvim-picker.fuzzy.config") or {}).max_results or 1000
-            local list, total = scope.file_filter(blob, q, max)
-            cb(list, total)
-            return
-        end
-        state.scope_blobs = state.scope_blobs or {}
-        local n = fuzzy.blob_count(blob)
-        local d = state.scope_blobs[sc]
-        if not d or d.src ~= blob or d.n ~= n then
-            if d then
-                fuzzy.blob_free(d.blob)
-            end
-            local nb = scope.derive(blob, sc)
-            if not nb then
-                return fuzzy.blob_filter(blob, q, cb) -- no blob support: the whole row
-            end
-            d = { blob = nb, src = blob, n = n }
-            state.scope_blobs[sc] = d
-        end
-        fuzzy.blob_filter(d.blob, q, function(list, total)
-            for _, r in ipairs(list) do
-                r.text = fuzzy.blob_text(blob, r.idx) or r.text -- render the ORIGINAL row
-            end
-            cb(list, total)
-        end)
-    end
-    --- Free the derived scope blobs (a new grep run, or close).
-    local function free_scope_blobs()
-        for _, d in pairs(state.scope_blobs or {}) do
-            fuzzy.blob_free(d.blob)
-        end
-        state.scope_blobs = nil
+        fuzzy.blob_filter(blob, q, cb, { scope = sc })
     end
     -- A generation guard so a slow async source/filter callback for an OLD query can't overwrite a newer one.
     local refilter_gen = 0
@@ -1965,8 +1930,6 @@ build = function(opts, kind)
             if state.blob then
                 fuzzy.blob_free(state.blob) -- a new query = a new candidate set → reclaim the old pool eagerly
             end
-            free_scope_blobs()
-            scope.reset() -- files may have changed since the last run
             state.blob = fuzzy.blob_new()
             state.src_cache = {} -- native index → derived `_src` (indices restart at 1 for the fresh blob)
             state.pool_n, state.grep_total, state.grep_query = 0, 0, query
@@ -2640,12 +2603,6 @@ build = function(opts, kind)
                 pcall(state.grep_stop)
             end
             release_run(state, items) -- drop THIS run's cached candidate texts + prepared fuzzy context (not another live finder's)
-            if state.scope_blobs then -- the derived grep-scope pools
-                for _, d in pairs(state.scope_blobs) do
-                    fuzzy.blob_free(d.blob)
-                end
-                state.scope_blobs = nil
-            end
             if state.blob then -- free the native blob-stream pool (a huge tree's SoA reclaimed eagerly)
                 fuzzy.blob_free(state.blob)
                 state.blob = nil
@@ -2782,7 +2739,7 @@ build = function(opts, kind)
     -- without building (and interning + GC-ing) a multi-million-string Lua pool. The candidate pool IS the
     -- native context; `refilter` ranks it and materialises only the top-K rows. `opts.blob_item(text)` derives
     -- an item's `_src` from its path (files/dirs/git: `{ path = text }`). The producer is killed + the context
-    -- freed in on_close. Requires ABI ≥ 5 (`fuzzy.has_blob()`); a finder falls back to `opts.stream` otherwise.
+    -- freed in on_close. Needs the native library (`fuzzy.has_blob()`); a finder falls back to `opts.stream` otherwise.
     -- Mutually exclusive with the per-query live `source` and the per-string `stream`.
     if opts.blob_stream and not opts.source then
         state.blob = fuzzy.blob_new()

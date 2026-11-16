@@ -1,7 +1,7 @@
 -- What the picker calls a match, and where it paints it.
 --
--- Two functions decide both: `match_terms` (every term must be a subsequence, the highlight is the
--- union of their positions) and `match_display` (when the NAME matches, the name lights up instead
+-- Two functions decide both: `match_terms` (the engine's highlight: every term of an fzf query
+-- must match, every occurrence lights up) and `match_display` (when the NAME matches, the name lights up instead
 -- of the scattered whole-path hits). The positions are CHARACTER offsets into the whole path, and
 -- lifting the basename positions into path coordinates by BYTE length was a real bug: every
 -- highlight landed past the name as soon as a directory held a multibyte character. That lift is
@@ -26,9 +26,17 @@ it("says nothing for an empty query", function()
     eq(nil, fuzzy.match_terms("   ", "abcdef"), "whitespace alone is no terms at all")
 end)
 
-it("ignores case on both sides", function()
-    eq({ 0, 1 }, fuzzy.match_terms("AB", "abc"))
+it("smart case: a lower-case query folds, an upper-case letter is respected", function()
     eq({ 0, 1 }, fuzzy.match_terms("ab", "ABC"))
+    eq(nil, fuzzy.match_terms("AB", "abc"))
+    eq({ 0, 1 }, fuzzy.match_terms("пи", "Пиши"), "in any script")
+end)
+
+it("takes fzf's syntax", function()
+    eq(nil, fuzzy.match_terms("ab !cd", "abcdef"), "a negated term that is there fails the match")
+    eq({ 0, 1 }, fuzzy.match_terms("ab !zz", "abcdef"))
+    eq(nil, fuzzy.match_terms("^cd", "abcdef"))
+    eq({ 4, 5 }, fuzzy.match_terms("ef$", "abcdef"))
 end)
 
 it("reports each position once however many terms hit it", function()

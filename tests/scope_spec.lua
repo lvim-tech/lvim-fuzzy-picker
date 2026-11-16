@@ -26,36 +26,41 @@ it("cycles line → path → file → line", function()
     eq("line", scope.next("file"))
 end)
 
-describe("lvim-picker.scope: the file scope")
+describe("lvim-picker.scope: the scopes the engine searches")
 
-it("keeps a row when its FILE holds every term (exact, smart-case)", function()
-    local f = vim.fn.tempname()
-    vim.fn.writefile({ "local h = vim.health", "return 1" }, f)
-    eq(true, scope.file_has(f, scope.terms("health")))
-    eq(true, scope.file_has(f, scope.terms("vim health")))
-    eq(false, scope.file_has(f, scope.terms("hrt"))) -- scattered letters do not count
-    eq(false, scope.file_has(f, scope.terms("Health"))) -- an uppercase letter = case-sensitive
+it("reads the literal terms a file scope highlights, smart-case in any script", function()
     eq({ { text = "x", ci = true } }, scope.terms("!neg | 'x$"))
+    eq(false, scope.terms("Пи")[1].ci)
+    eq(true, scope.terms("пи")[1].ci)
 end)
 
-it("filters a blob by file content, in source order", function()
+it("filters a grep blob by line, path and file", function()
     local engine = require("lvim-fuzzy")
-    if not (engine.has_blob and engine.has_blob()) then
-        skip("filters a blob by file content", "the native lvim-fuzzy library (blob ABI) is not built")
+    if not engine.native_loaded() then
+        skip("filters a grep blob by scope", "the native lvim-fuzzy library is not built")
         return
     end
-    scope.reset()
+    local fuzzy = require("lvim-picker.fuzzy")
     local a, b = vim.fn.tempname(), vim.fn.tempname()
     vim.fn.writefile({ "health here" }, a)
     vim.fn.writefile({ "nothing" }, b)
     local blob = engine.blob_new()
-    engine.blob_append(blob, ("%s:1:x\n%s:1:y\n%s:1:z\n"):format(b, a, a))
+    engine.blob_append(blob, ("%s:1:x\n%s:1:y\n%s:1:health()\n"):format(b, a, b))
     engine.blob_flush(blob)
-    local list, total = scope.file_filter(blob, "health", 10)
-    eq(2, total)
-    eq({ 2, 3 }, { list[1].idx, list[2].idx })
-    local d = scope.derive(blob, "line")
-    eq({ "x", "y", "z" }, { engine.blob_text(d, 1), engine.blob_text(d, 2), engine.blob_text(d, 3) })
-    engine.blob_free(d)
+    local function run(sc)
+        local got
+        fuzzy.blob_filter(blob, "health", function(list, total)
+            got = { idx = vim.tbl_map(function(r)
+                return r.idx
+            end, list), total = total }
+        end, { scope = sc })
+        vim.wait(1000, function()
+            return got ~= nil
+        end)
+        return got
+    end
+    eq({ idx = { 3 }, total = 1 }, run("line"))
+    eq({ idx = { 2 }, total = 1 }, run("file"))
+    eq(0, run("path").total, "the temp paths do not say health")
     engine.blob_free(blob)
 end)
