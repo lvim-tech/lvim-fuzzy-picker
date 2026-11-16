@@ -169,6 +169,52 @@ require("lvim-picker").open({
 })
 ```
 
+## Speed
+
+lvim-picker against fzf-lua, snacks.picker, mini.pick and telescope — each as a whole plugin, not
+just its matcher. Every plugin runs in its own headless Neovim with its **default settings** and opens
+its picker on the same command (`cat <corpus>`, the way a files / grep picker runs one). **Load** is
+from opening the picker to the whole list loaded; a **query** is typed as keys over the loaded list and
+timed until that plugin's result for it is ready. Milliseconds, lower is better; AMD Ryzen 9 3900XT
+(24 threads).
+
+**files** — 1 000 000 paths under `$HOME`
+
+| plugin | load | `hel` | `lvim` | `config` | `initlua` | mean |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| **lvim-picker** | **249** | **20.9** | **14.2** | **9.8** | **10.7** | **13.9** |
+| fzf-lua | 321 | 160.0 | 104.7 | 66.0 | 53.0 | 96.0 |
+| mini.pick | 2 871 | 612.7 | 422.0 | 238.7 | 250.9 | 381.1 |
+| snacks.picker | 940 | 1 886 | 1 086 | 1 088 | 1 190 | 1 313 |
+| telescope | 4 614 | 34 351 | 22 388 | 10 784 | 9 873 | 19 349 |
+
+**grep** — 300 000 ripgrep lines
+
+| plugin | load | `err` | `function` | `return` | mean |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| **lvim-picker** | **110** | **16.8** | **13.3** | **17.1** | **15.7** |
+| fzf-lua | 140 | 74.8 | 22.6 | 65.7 | 54.4 |
+| mini.pick | 837 | 292.2 | 117.2 | 194.2 | 201.2 |
+| snacks.picker | 296 | 639.2 | 237.1 | 333.6 | 403.3 |
+| telescope | 1 235 | 10 727 | 2 503 | 9 251 | 7 494 |
+
+A query is 6.9× faster than fzf-lua on the paths and 3.5× on the grep lines, 27× / 13× than
+mini.pick, 94× / 26× than snacks.picker and over 400× than telescope (its default sorter).
+
+- lvim-picker, fzf-lua and telescope find the same matches; snacks and mini.pick find slightly fewer
+  (stricter rules).
+- The time is to the result being ready (headless, nothing is drawn). lvim-picker and fzf-lua build
+  only the rows they can show; the others sort the whole result — that is their real work, not a
+  shortcut of the test.
+- One measurement per query; the noise is a few milliseconds.
+- Versions: fzf-lua 82ddfe6 (fzf 0.75), snacks.nvim 882c996, mini.pick 406d413, telescope.nvim 1e1bab7.
+
+Run it on your machine (needs `fd`, `rg`, `fzf`, `git`; clones the other plugins into a cache dir):
+
+```sh
+bench/run.sh [SOURCE_TREE]
+```
+
 ## Configuration
 
 `setup()` merges your options into the live config in place (a nested `fuzzy` subtable merges into the fuzzy
