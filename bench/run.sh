@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# lvim-picker against fzf-lua, snacks.picker, mini.pick and telescope, each as a whole plugin.
+# lvim-picker against fzf-lua, snacks.picker, mini.pick, telescope and tv.nvim, each as a whole plugin.
 #
 #   bench/run.sh [SOURCE_TREE]
 #
@@ -8,7 +8,8 @@
 # picker to the whole list loaded, and from typing a query (as keys) to its result being ready.
 # Corpora: up to 1 000 000 paths under $HOME (fd) and up to 300 000 ripgrep lines of SOURCE_TREE
 # (default: the directory above this plugin). Results: $BENCH_DIR/results.jsonl, a table on stdout.
-# Needs: nvim, git, fd, rg, fzf, and the lvim-* checkouts beside this one (or $LVIM_PLUGINS_DIR).
+# Needs: nvim, git, fd, rg, fzf, cargo (builds television into the cache dir), and the lvim-* checkouts
+# beside this one (or $LVIM_PLUGINS_DIR).
 set -e
 HERE="$(cd "$(dirname "$0")" && pwd)"
 export LVIM_PLUGINS_DIR="${LVIM_PLUGINS_DIR:-$(dirname "$(dirname "$HERE")")}"
@@ -27,6 +28,8 @@ clone folke/snacks.nvim 882c996
 clone echasnovski/mini.pick 406d413
 clone nvim-telescope/telescope.nvim 1e1bab7
 clone nvim-lua/plenary.nvim 74b06c6
+clone alexpasmantier/tv.nvim 4b156a2
+[ -x "$BENCH_DIR/tvbin/bin/tv" ] || cargo install -q --root "$BENCH_DIR/tvbin" television --version 0.15.9 --locked
 
 [ -s "$BENCH_DIR/files.txt" ] || fd --type f --hidden --no-ignore --exclude .git . "$HOME" 2>/dev/null | head -1000000 > "$BENCH_DIR/files.txt"
 [ -s "$BENCH_DIR/grep.txt" ] || rg --no-heading --line-number --column -S 'e' "$SRC" 2>/dev/null | cut -c1-400 | head -300000 > "$BENCH_DIR/grep.txt"
@@ -35,7 +38,7 @@ out="$BENCH_DIR/results.jsonl"
 : > "$out"
 for c in files grep; do
     if [ $c = files ]; then Q=(hel lvim config initlua); else Q=(err function return); fi
-    for e in lvim-picker fzf-lua snacks mini.pick telescope; do
+    for e in lvim-picker fzf-lua tv.nvim snacks mini.pick telescope; do
         timeout 1800 nvim --headless -u NONE -l "$HERE/drv.lua" $e $c "${Q[@]}" 2>/dev/null | grep '^{' >> "$out" || true
     done
 done

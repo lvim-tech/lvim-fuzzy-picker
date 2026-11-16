@@ -211,6 +211,54 @@ A["mini.pick"] = function()
     end, "<C-u>"
 end
 
+A["tv.nvim"] = function()
+    -- television through tv.nvim: a `bench` channel whose source is `cat <corpus>`. tv draws "● " after
+    -- its "i / matched" count while it loads or matches; the result is ready when the prompt shows the
+    -- query and the indicator is gone.
+    vim.opt.rtp:append(D .. "/plugins/tv.nvim")
+    local cable = D .. "/tvcable-" .. corpus
+    vim.fn.mkdir(cable, "p")
+    vim.fn.writefile({ "[metadata]", 'name = "bench"', "", "[source]", ('command = "cat %s"'):format(file) }, cable .. "/bench.toml")
+    require("tv").setup({
+        tv_binary = D .. "/tvbin/bin/tv",
+        global_keybindings = {},
+        channels = { bench = { args = { "--cable-dir", cable, "--no-preview" }, handlers = {} } },
+    })
+    local timer = vim.uv.new_timer()
+    local cand
+    timer:start(0, 1, vim.schedule_wrap(function()
+        for _, b in ipairs(vim.api.nvim_list_bufs()) do
+            if vim.api.nvim_buf_is_valid(b) and vim.bo[b].buftype == "terminal" then
+                local l = vim.api.nvim_buf_get_lines(b, 1, 2, false)[1] or ""
+                local q = l:match("│> (.-)%s%s+%d+ / %d+") or l:match("│>%s*()%s%s+%d+ / ") and ""
+                local m, busy = l:match("%d+ / (%d+)(.-)│")
+                if not (q and m) or busy:find("●") then
+                    cand = nil
+                else
+                    -- tv may still show the old count for a frame after the query appears: a count is
+                    -- final once it held, idle, for 100 ms; the time taken is when it FIRST appeared
+                    local t = now()
+                    if not cand or cand.q ~= q or cand.m ~= m then
+                        cand = { q = q, m = m, t = t }
+                    elseif t - cand.t > 100e6 then
+                        -- tv drops a few lines it cannot read (299 994 of the 300 000 grep lines), so
+                        -- "loaded" is the settled, idle count rather than exactly N
+                        if q == "" and not B.loaded and t_open then
+                            B.loaded = (cand.t - t_open) / 1e6
+                        end
+                        if q == cur_q and t_query and not B.done[q] then
+                            B.done[q] = { ms = (cand.t - t_query) / 1e6, hits = tonumber(m) }
+                        end
+                    end
+                end
+            end
+        end
+    end))
+    return function()
+        require("tv").tv_channel("bench")
+    end, "<C-u>"
+end
+
 local open, clear = A[engine]()
 B.clear = clear
 function B.open()
