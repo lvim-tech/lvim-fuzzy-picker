@@ -79,7 +79,11 @@ local function swap_backend(cur, opts)
         vim.notify("lvim-picker: this finder has no alternate backend", vim.log.levels.INFO)
         return
     end
-    opts.reopen((cur == "fzf") and "tint" or "fzf")
+    -- one swap at a time; a held key's repeats are swallowed meanwhile (see lvim-picker.swap)
+    local keys = vim.tbl_get(config or {}, "keys", "swap_backend") or {}
+    require("lvim-picker.swap").run(type(keys) == "string" and { keys } or keys, function()
+        opts.reopen((cur == "fzf") and "tint" or "fzf")
+    end)
 end
 
 --- Install `opts.reopen(backend)` on a command-driven finder so the swap keys can re-open it in the OTHER
@@ -101,7 +105,7 @@ end
 --- shares one backend (only the structured lsp/diagnostics lists stay tint). Each item is encoded as
 --- `idx\ttext`; fzf shows/matches only the text (`--with-nth`), and the idx recovers the full item on
 --- selection, so the finder keeps its own `preview` / `on_confirm` / `on_cancel` for BOTH backends.
----@param spec { title: string, items: table[], icon?: boolean, preview?: function, on_confirm?: function, on_cancel?: function, opts?: table }
+---@param spec { title: string, items: table[], icon?: boolean, preview?: function, preview_file_of?: function, on_confirm?: function, on_cancel?: function, opts?: table }
 local function pick_items(spec)
     local items = spec.items or {}
     local b = fzf_backend(spec.opts)
@@ -134,6 +138,7 @@ local function pick_items(spec)
         title = spec.title,
         items = items,
         preview = spec.preview,
+        preview_file_of = spec.preview_file_of, -- the tint list's async file preview, when the finder has one
         on_confirm = spec.on_confirm,
         on_cancel = spec.on_cancel,
     }, spec.opts or {}))
@@ -1027,9 +1032,14 @@ build = function(opts, kind)
             local it = state.filtered[state.sel]
             local s = it and it._src
             if s and s.path and s.path ~= "" then
-                local b = vim.fn.bufadd(s.path)
-                pcall(vim.fn.bufload, b)
-                return math.min(vim.api.nvim_buf_line_count(b), maxr)
+                -- a loaded buffer knows its length; otherwise count at most `maxr` lines of the file — never
+                -- LOAD it just to size the panel (that ran its BufRead/FileType/LSP work on every row)
+                local b = vim.fn.bufnr(s.path)
+                if b > 0 and vim.api.nvim_buf_is_loaded(b) then
+                    return math.min(vim.api.nvim_buf_line_count(b), maxr)
+                end
+                local ok, lines = pcall(vim.fn.readfile, s.path, "", maxr)
+                return math.max(1, ok and #lines or 1)
             end
             return 1
         end
@@ -1558,6 +1568,10 @@ build = function(opts, kind)
     local preview_cache = {} ---@type table<string, { lines: string[], ft: string }>
     local preview_lru = {} ---@type string[]  MRU-ordered paths (index 1 = most recently used)
     local preview_inflight = false
+    -- Every preview request takes a number; showing a preview from memory (the sync fallback below) records its
+    -- number, and an async read requested BEFORE it is then cached but not shown — it must not replace the
+    -- newer in-memory preview when it lands.
+    local preview_seq, preview_sync_seq = 0, 0
     ---@type { sel: integer, path: string, lnum: integer?, col: integer?, ft: string?, max: integer }?
     local preview_want
     --- Look a file up in the LRU cache, promoting it to most-recent on a hit.
@@ -1630,18 +1644,30 @@ build = function(opts, kind)
                 return
             end
             cache_put(want.path, lines, ft)
-            apply_async_preview(want, { lines = lines, ft = ft })
+            if want.seq > preview_sync_seq then
+                apply_async_preview(want, { lines = lines, ft = ft })
+            end
             pump_preview()
         end)
     end
     --- Request the async preview for the CURRENT selection (the file `opts.preview_file_of` maps it to). No
-    --- file (e.g. a scratch/[No Name] item) ⇒ clear the preview.
+    --- file ⇒ the finder's in-memory `opts.preview` when it has one (e.g. a location whose file is open in a
+    --- buffer — the buffer may hold unsaved changes, and it is in memory anyway), else clear the preview.
     local function request_preview()
         local it = state.filtered[state.sel]
         local loc = (it and it._src and opts.preview_file_of and opts.preview_file_of(it._src)) or nil
+        preview_seq = preview_seq + 1
         if not (loc and loc.path and loc.path ~= "") then
-            state.preview_lines, state.preview_ft, state.preview_focus, state.preview_loc = {}, nil, nil, nil
-            state.preview_col = nil
+            preview_want = nil
+            preview_sync_seq = preview_seq
+            if it and opts.preview then
+                local lines, ft, focus = opts.preview(it._src)
+                state.preview_lines = (type(lines) == "table" and lines) or (lines and { tostring(lines) }) or {}
+                state.preview_ft, state.preview_focus = ft, focus
+            else
+                state.preview_lines, state.preview_ft, state.preview_focus = {}, nil, nil
+            end
+            state.preview_loc, state.preview_col = nil, nil
             refit()
             if state.preview_pan and state.preview_pan.refresh then
                 state.preview_pan.refresh()
@@ -1652,7 +1678,8 @@ build = function(opts, kind)
         -- match DEEP in a huge file never materialises tens of thousands of lines on the main thread.
         local span = math.max(500, (loc.lnum or 0) + 200)
         local maxl = math.min(span, (config or {}).preview_max_lines or 2000)
-        preview_want = { sel = state.sel, path = loc.path, lnum = loc.lnum, col = loc.col, ft = loc.ft, max = maxl }
+        preview_want =
+            { sel = state.sel, seq = preview_seq, path = loc.path, lnum = loc.lnum, col = loc.col, ft = loc.ft, max = maxl }
         pump_preview()
     end
 
@@ -1681,27 +1708,36 @@ build = function(opts, kind)
         set_list_cursor() -- scroll the window to keep the selection in view
         refresh_count() -- re-apply the live match count to the chassis border / overlay counter
     end
-    -- SYNC-preview debounce (small in-memory finders — lsp / diagnostics / the editable file preview). Their
-    -- preview is cheap but a per-move relayout is still wasteful; debounce it to the settle. FILE finders do NOT
-    -- use this — their preview is async (request_preview) and follows the cursor on every move.
-    local preview_gen = 0
+    -- SYNC preview (the in-memory finders — buffers / lsp / diagnostics / help / keymaps / the editable file
+    -- preview). It FOLLOWS THE CURSOR at once on every move, like the async file preview: a trailing debounce
+    -- only updated it when a held key was released (the repeat is faster than the settle). `preview_debounce_ms`
+    -- > 0 caps how OFTEN it updates while scrolling (the first move and the final position always update).
+    -- FILE / directory finders do not come here — their preview is async (request_preview).
+    local preview_gen, preview_last = 0, 0
+    local function show_sync_preview()
+        preview_last = vim.uv.hrtime() / 1e6
+        fetch_preview()
+        refit()
+        if state.preview_pan and state.preview_pan.refresh then
+            state.preview_pan.refresh()
+        end
+        set_list_winbar()
+    end
     local function schedule_preview()
         if opts.preview_file_of or not (opts.preview or opts.preview_file) then
             return
         end
         preview_gen = preview_gen + 1
         local mygen = preview_gen
+        local wait = ((config or {}).preview_debounce_ms or 0) - (vim.uv.hrtime() / 1e6 - preview_last)
+        if wait <= 0 then
+            return show_sync_preview()
+        end
         vim.defer_fn(function()
-            if mygen ~= preview_gen or state.closed then
-                return
+            if mygen == preview_gen and not state.closed then
+                show_sync_preview()
             end
-            fetch_preview()
-            refit()
-            if state.preview_pan and state.preview_pan.refresh then
-                state.preview_pan.refresh()
-            end
-            set_list_winbar()
-        end, (config or {}).preview_debounce_ms or 60)
+        end, math.ceil(wait))
     end
     move = function(d)
         if #state.filtered == 0 then
@@ -1712,7 +1748,7 @@ build = function(opts, kind)
         if opts.preview_file_of then
             request_preview() -- async file preview — follows the cursor while holding `j` (fzf-like)
         else
-            schedule_preview() -- debounced sync preview for the small in-memory finders
+            schedule_preview() -- the sync preview of the in-memory finders, at once
         end
     end
     --- Apply a new result list (from the fuzzy filter or a live source) to the UI. `light` forwards to
@@ -2540,9 +2576,11 @@ build = function(opts, kind)
                         -- Swap the finder's backend (tint ⇄ fzf) while typing — command finders only.
                         if opts.reopen then
                             for _, k in ipairs(keylist(kcfg.swap_backend)) do
-                                imap(k, function()
+                                -- NORMAL too: the prompt can be in normal mode for a moment (a swap back from
+                                -- fzf), and an unbound <C-]> there is Neovim's jump-to-tag (E349)
+                                vim.keymap.set({ "i", "n" }, k, function()
                                     swap_backend("tint", opts)
-                                end)
+                                end, { buffer = buf, nowait = true, silent = true })
                             end
                         end
                         -- <Esc> / <C-f> drop to NORMAL on the list (where the filter hotkeys
@@ -3044,6 +3082,16 @@ function M.buffers(opts)
             end
             return { "[no preview]" }, ""
         end,
+        -- a buffer that is not loaded is read from its file ASYNC (follows the cursor); a loaded one is shown
+        -- from memory by `preview` above
+        preview_file_of = function(it)
+            local b = it.bufnr
+            if not b or (api.nvim_buf_is_valid(b) and api.nvim_buf_is_loaded(b)) then
+                return nil
+            end
+            local name = api.nvim_buf_is_valid(b) and api.nvim_buf_get_name(b) or ""
+            return name ~= "" and { path = name } or nil
+        end,
     }, opts or {}))
 end
 
@@ -3182,7 +3230,7 @@ function M.directories(opts)
                 end,
                 fzf_args = { "--nth", "2.." }, -- match the path, not the leading folder icon
                 preview = function(it)
-                    return run_lines({ "ls", "-A", it.path }), ""
+                    return source.list_dir(it.path, 2000), ""
                 end,
                 on_confirm = function(it)
                     if it and it.path then
@@ -3200,8 +3248,9 @@ function M.directories(opts)
                 vim.cmd.cd(vim.fn.fnameescape(it.path))
             end
         end,
-        preview = function(it)
-            return run_lines({ "ls", "-A", it.path }), ""
+        -- ASYNC preview (the listing is read off the main thread, LRU-cached), so it follows the cursor.
+        preview_file_of = function(s)
+            return s.path and s.path ~= "" and { path = s.path } or nil
         end,
     }
     stream_paths(spec, dir_list_cmd())
@@ -3455,7 +3504,11 @@ function M.oldfiles(opts)
             end
         end,
         preview = function(it)
-            return read_preview(it.path)
+            return read_preview(it.path) -- the fzf-TUI backend's preview
+        end,
+        -- the tint list reads the file ASYNC, like files: follows the cursor while scrolling
+        preview_file_of = function(s)
+            return s.path and s.path ~= "" and { path = s.path } or nil
         end,
     })
 end
@@ -3523,8 +3576,9 @@ function M.git_files(opts)
                 vim.cmd.edit(vim.fn.fnameescape(it.path))
             end
         end,
-        preview = function(it)
-            return read_preview(it.path)
+        -- ASYNC file preview, like files: follows the cursor while scrolling.
+        preview_file_of = function(s)
+            return s.path and s.path ~= "" and { path = s.path } or nil
         end,
     }
     stream_paths(spec, { "git", "ls-files" }) -- the rev-parse guard above is a quick check
@@ -3604,14 +3658,38 @@ M._jump_to = jump_to
 ---@param it table
 ---@return string[] lines, string filetype, integer? focus
 local function preview_location(it)
+    -- a buffer that holds the file is what to show (it may have unsaved changes), and it is in memory
+    local b = it.bufnr
+    if not (b and api.nvim_buf_is_valid(b)) and it.path and it.path ~= "" then
+        b = vim.fn.bufnr(it.path)
+    end
+    if b and b > 0 and api.nvim_buf_is_loaded(b) then
+        return api.nvim_buf_get_lines(b, 0, preview_span(it.lnum), false), vim.bo[b].filetype, it.lnum
+    end
     if it.path and it.path ~= "" then
         local lines, ft = read_preview(it.path, preview_span(it.lnum))
         return lines, ft, it.lnum
     end
-    if it.bufnr and api.nvim_buf_is_loaded(it.bufnr) then
-        return api.nvim_buf_get_lines(it.bufnr, 0, preview_span(it.lnum), false), vim.bo[it.bufnr].filetype, it.lnum
-    end
     return { "[no preview]" }, "", nil
+end
+
+--- The file a location item previews ASYNC (`preview_file_of`): its path, or its buffer's name when the buffer
+--- is not loaded (a quickfix entry, a jump), focused on its line. Nil when a LOADED buffer holds it — then the
+--- in-memory `preview_location` shows it, unsaved changes included.
+---@param it table
+---@return { path: string, lnum: integer?, col: integer? }?
+local function location_file_of(it)
+    local b = it.bufnr
+    if b and api.nvim_buf_is_valid(b) and api.nvim_buf_is_loaded(b) then
+        return nil
+    end
+    local path = (it.path and it.path ~= "" and it.path)
+        or (b and api.nvim_buf_is_valid(b) and api.nvim_buf_get_name(b))
+        or ""
+    if path == "" or vim.fn.bufloaded(path) == 1 then
+        return nil
+    end
+    return { path = path, lnum = it.lnum, col = it.col }
 end
 
 --- Fuzzy finder over MARKS (`:marks`); confirming jumps to the mark, with a preview at its line.
@@ -3642,7 +3720,8 @@ function M.marks(opts)
         items = items,
         opts = opts,
         on_confirm = jump_to,
-        preview = preview_location,
+        preview = preview_location, -- the fzf-TUI backend, and a location whose file is open in a buffer
+        preview_file_of = location_file_of, -- otherwise the file is read ASYNC (follows the cursor)
     })
 end
 
@@ -3698,7 +3777,8 @@ function M.quickfix(opts)
         items = items,
         opts = opts,
         on_confirm = jump_to,
-        preview = preview_location,
+        preview = preview_location, -- the fzf-TUI backend, and a location whose file is open in a buffer
+        preview_file_of = location_file_of, -- otherwise the file is read ASYNC (follows the cursor)
     })
 end
 
@@ -3726,7 +3806,8 @@ function M.jumplist(opts)
         items = items,
         opts = opts,
         on_confirm = jump_to,
-        preview = preview_location,
+        preview = preview_location, -- the fzf-TUI backend, and a location whose file is open in a buffer
+        preview_file_of = location_file_of, -- otherwise the file is read ASYNC (follows the cursor)
     })
 end
 

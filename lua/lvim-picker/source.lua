@@ -528,12 +528,37 @@ end
 local PREVIEW_CHUNK = 256 * 1024
 local PREVIEW_BYTE_CAP = 2 * 1024 * 1024
 
+--- The entries of directory `path` as `ls -A` lists them (everything but `.` and `..`, by name), at most
+--- `max` of them. No process is started: one readdir.
+---@param path string
+---@param max? integer
+---@return string[]
+function M.list_dir(path, max)
+    local names = {}
+    local h = uv.fs_scandir(path)
+    while h do
+        local name = uv.fs_scandir_next(h)
+        if not name then
+            break
+        end
+        names[#names + 1] = name
+    end
+    table.sort(names)
+    if max and #names > max then
+        for i = #names, max + 1, -1 do
+            names[i] = nil
+        end
+    end
+    return names
+end
+
 --- Read up to `max_lines` lines of `path` ASYNCHRONOUSLY (off the main thread via libuv fs), then deliver
 --- `cb(lines, ft)` on the main loop. The read is DOUBLY BOUNDED — it stops at `PREVIEW_BYTE_CAP` bytes and the
 --- split yields at most `max_lines` lines — so a huge file (a minified bundle, a log) can never freeze the
 --- editor the way a synchronous `readfile` of `lnum+context` lines does. The filetype is guessed from the name
---- (no read). On an open/read error → `cb({ "[unreadable]" }, "")`. The caller gen-guards + LRU-caches around
---- this so a stale read (superseded by a newer cursor position) is dropped and a re-visited file is instant.
+--- (no read). A DIRECTORY is listed instead (its entries as `ls -A` gives them, read asynchronously too). On an
+--- open/read error → `cb({ "[unreadable]" }, "")`. The caller gen-guards + LRU-caches around this so a stale
+--- read (superseded by a newer cursor position) is dropped and a re-visited file is instant.
 ---@param path string
 ---@param max_lines integer
 ---@param cb fun(lines: string[], filetype: string)
@@ -590,6 +615,27 @@ function M.read_preview_async(path, max_lines, cb)
             end)
         end
         uv.fs_fstat(fd, function(serr, st)
+            if not serr and st and st.type == "directory" then
+                uv.fs_close(fd, function() end)
+                uv.fs_scandir(path, function(derr, req)
+                    if derr or not req then
+                        return fail()
+                    end
+                    local names = {}
+                    while true do
+                        local name = uv.fs_scandir_next(req)
+                        if not name then
+                            break
+                        end
+                        names[#names + 1] = name
+                    end
+                    table.sort(names)
+                    vim.schedule(function()
+                        cb(vim.list_slice(names, 1, max_lines), "")
+                    end)
+                end)
+                return
+            end
             if serr or not st or st.type ~= "file" then
                 return not_a_file()
             end

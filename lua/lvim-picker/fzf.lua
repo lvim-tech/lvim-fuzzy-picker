@@ -693,7 +693,9 @@ function M.open(opts)
         -- key is registered (the quickfix key OR an open-method key); a plain accept prints "".
         local has_expect = qf_key ~= nil or #expect_methods > 0 or swap_fk ~= nil
         local key, items = "", {}
-        if code == 0 and lines and #lines > 0 then
+        -- exit 1 = "no match": an --expect key pressed over an EMPTY list (a live grep before anything is typed)
+        -- still prints the key, so it is read on 1 as well — else C-] there closed the finder instead of swapping
+        if (code == 0 or (code == 1 and has_expect)) and lines and #lines > 0 then
             local start = 1
             if has_expect then
                 key = lines[1] or ""
@@ -709,8 +711,50 @@ function M.open(opts)
         -- to `opts.reopen("tint")`, which routes through the dock and REPLACES this fzf entry in place. Scheduled
         -- so it runs after this exit callback unwinds.
         if swap_fk and key == swap_fk and opts.reopen then
+            local swap = require("lvim-picker.swap")
+            if swap.busy() then
+                return -- a swap is already on its way (a held key) — this one is dropped
+            end
+            -- The tint list enters its prompt in INSERT on open, but this fzf terminal is torn down around it, and
+            -- leaving TERMINAL mode drops the editor to NORMAL — before or after the new prompt takes focus,
+            -- depending on how fast the tint list opens. Either way the cursor sat on the prompt's label instead of
+            -- in the input. So whichever comes LAST (terminal mode left / the prompt focused) re-enters insert.
+            -- When the fzf window closes while the editor is still in terminal mode, that mode outlives it: the prompt
+            -- has focus but the mode still reads "t", `startinsert` cannot apply, and the next key typed only ends
+            -- it and then runs as a NORMAL command (the first letter typed was lost — `a` appended). A key fed
+            -- there does the same, so feeding `A` (no mappings) ends it and enters insert at the end of the line.
+            local group = api.nvim_create_augroup("LvimPickerSwapInsert", { clear = true })
+            local done = false
+            local function to_insert()
+                vim.schedule(function()
+                    local buf = api.nvim_get_current_buf()
+                    if done or vim.bo[buf].filetype ~= "lvim-picker-prompt" then
+                        return
+                    end
+                    local mode = api.nvim_get_mode().mode
+                    if mode == "i" then
+                        done = true
+                    elseif mode == "t" then
+                        done = true
+                        api.nvim_feedkeys("A", "n", false) -- the terminal mode left over from the closed fzf window
+                    else
+                        done = true
+                        vim.cmd("startinsert!")
+                    end
+                    if done then
+                        pcall(api.nvim_del_augroup_by_id, group)
+                    end
+                end)
+            end
+            api.nvim_create_autocmd("ModeChanged", { group = group, pattern = "t:*", callback = to_insert })
+            api.nvim_create_autocmd({ "WinEnter", "BufEnter" }, { group = group, callback = to_insert })
+            vim.defer_fn(function()
+                pcall(api.nvim_del_augroup_by_id, group)
+            end, 800)
             vim.schedule(function()
-                opts.reopen("tint")
+                swap.run(keylist(kcfg.swap_backend or {}), function()
+                    opts.reopen("tint")
+                end)
             end)
             return
         end

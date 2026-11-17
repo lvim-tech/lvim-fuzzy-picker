@@ -271,10 +271,10 @@ require("lvim-picker").setup({
     -- an over-long line is truncated, not omitted). A broad search hits minified / cache / log files whose one
     -- line is MEGABYTES; without this even a few hundred k matches buffer gigabytes into the blob. 0 disables.
     grep_max_columns = 512,
-    -- (tint SYNC previews: lsp / diagnostics / editable) settle time, in ms, before the preview updates while
-    -- scrolling. FILE previews (files / grep) are read ASYNC (off the main thread, LRU-cached) and follow the
-    -- cursor on every move, so they ignore this. 0 = update every move.
-    preview_debounce_ms = 60,
+    -- (tint in-memory previews: buffers / lsp / diagnostics / help / keymaps / editable) the preview follows the
+    -- cursor at once; > 0 caps it to one update per this many ms while scrolling. The file and directory previews
+    -- (files / grep / git_files / oldfiles / directories) are read ASYNC and follow every move regardless.
+    preview_debounce_ms = 0,
     -- (tint FILE previews) recently previewed files kept in the async LRU cache (instant re-visits).
     preview_cache = 32,
     -- (tint FILE previews) hard cap on lines materialised per preview (bounds a deep match in a huge file).

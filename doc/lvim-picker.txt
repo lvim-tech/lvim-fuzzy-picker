@@ -202,13 +202,15 @@ opens the focused row at its line:col. The fzf-TUI grep backend
 is unchanged — fzf owns its own result set and its native `<ctrl-g>`.
 
                                                              *lvim-picker-preview*
-The FILE previews (files / grep) are read ASYNCHRONOUSLY — off the main thread via
-libuv, bounded to `preview_max_lines`, and LRU-cached (`preview_cache`) — so the
-preview FOLLOWS the cursor while you hold `j` (a re-visited or same-file row is
-instant; a new file lands within a read) instead of freezing on a synchronous disk
-read per step. A single read is in flight at a time, always re-targeting the latest
-selection. The small in-memory previews (lsp / diagnostics / the editable file
-preview) update on a settle debounce (`preview_debounce_ms`) instead. The file
+The FILE and DIRECTORY previews (files / grep / git_files / oldfiles / directories)
+are read ASYNCHRONOUSLY — off the main thread via libuv, bounded to
+`preview_max_lines`, and LRU-cached (`preview_cache`) — so the preview FOLLOWS the
+cursor while you hold `j` (a re-visited or same-file row is instant; a new file lands
+within a read) instead of freezing on a synchronous disk read per step. A single
+read is in flight at a time, always re-targeting the latest selection. The
+in-memory previews (buffers / lsp / diagnostics / help / keymaps / the editable file
+preview) follow the cursor at once too; `preview_debounce_ms` > 0 caps how often
+they update while scrolling. The file
 preview panel holds a FIXED height (like fzf) so scrolling across files never
 reflows the windows.
 

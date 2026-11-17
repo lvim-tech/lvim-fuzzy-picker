@@ -28,7 +28,7 @@
 ---@field stream_slice_ms integer  Main-thread time budget (ms) of one paced stream-ingest slice (see spawn_stream)
 ---@field grep_max        integer  (tint grep) the native-blob STORE ceiling: matches past it are counted, not stored
 ---@field grep_max_columns integer  (tint grep) cap on each ripgrep result line's length (rg --max-columns); 0 = off
----@field preview_debounce_ms integer  Settle time (ms) before the SYNC preview updates while scrolling (file previews are async, no debounce)
+---@field preview_debounce_ms integer  (tint list, in-memory previews) at most one preview update per this many ms while scrolling; 0 = every move
 ---@field preview_cache      integer  How many recently previewed files the async file-preview LRU cache keeps (instant re-visits)
 ---@field preview_max_lines  integer  Hard cap on lines materialised per async file preview (bounds a deep match in a huge file)
 ---@field source          table    files/directories listing engine + what it ignores (engine / exclude / hidden / …)
@@ -134,12 +134,11 @@ return {
     -- 512 is ample; raise it if you need to fuzzy-filter on text past that column. 0 disables the cap.
     grep_max_columns = 512,
 
-    -- (tint list — SYNC in-memory previews: lsp / diagnostics / the editable file preview) settle time, in ms,
-    -- before the preview updates while SCROLLING results. Their preview is cheap but a per-move relayout is
-    -- wasteful, so it is debounced to the settle. The FILE previews (files / grep) are read ASYNC (off the main
-    -- thread, LRU-cached) and FOLLOW the cursor on every move, so they do NOT use this. Confirm always opens the
-    -- focused row regardless of whether the preview has caught up. 0 = update every move.
-    preview_debounce_ms = 60,
+    -- (tint list — the in-memory previews: buffers / lsp / diagnostics / help / keymaps / the editable file
+    -- preview) the preview FOLLOWS THE CURSOR at once while scrolling. A value > 0 caps how often it updates
+    -- (at most one update per this many ms; the first move and the final position always update). The file and
+    -- directory previews (files / grep / git_files / oldfiles / directories) are read ASYNC and do not use it.
+    preview_debounce_ms = 0,
 
     -- (tint FILE previews — files / grep) how many recently previewed files to keep in the async preview's LRU
     -- cache. Re-visiting a cached file (scrolling within one grep file, or scrolling back) is INSTANT; a miss is
