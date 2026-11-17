@@ -14,10 +14,14 @@ CONTENTS                                                   *lvim-picker-contents
 1. INTRODUCTION                                        *lvim-picker-introduction*
 
 A unified fuzzy picker (files / grep / buffers / git / LSP locations /
-diagnostics / marks / …) with a real fzf TUI backend for the heavy
-command-driven finders and a Lua tint-list backend for the structured ones, plus
-the shared fuzzy matching engine. Every finder shares one look and one set of
-keys, and docks as a centred float, a bottom dock, or the message-zone area.
+diagnostics / marks / …) on the shared fuzzy engine (lvim-fuzzy-core, fzf's
+query syntax). Every finder shares one look and one set of keys, and docks as a
+centred float, a bottom dock, or the message-zone area.
+
+BREAKING: the fzf-TUI backend is gone — every finder is the Lua list. The
+options `fzf_tui` and `grep_multiline` and the keys `swap_backend`, `park`,
+`nav`, `abort`, `accept`, `preview_down` / `preview_up` are no longer read. For
+a finder in the terminal there is lvim-fuzzy-cli.
 
 ==============================================================================
 2. REQUIREMENTS                                        *lvim-picker-requirements*
@@ -25,8 +29,7 @@ keys, and docks as a centred float, a bottom dock, or the message-zone area.
 - Neovim >= 0.12.x
 - lvim-utils, lvim-ui and lvim-fuzzy (the shared matching engine — every finder
   ranks through it; its native library is required)
-- the `fzf` binary (+ `mkfifo`) for the fzf-TUI backend (falls back to the Lua
-  tint list without it)
+- `fd` (or `rg` / `find`) to list files, `rg` to grep
 - optional: lvim-hud (statusline overlay), lvim-msgarea (the `area` dock)
 
 ==============================================================================
@@ -60,7 +63,7 @@ KEYMAP CHEATSHEET                                              *lvim-picker-help
 
 <Esc> (off the query, onto the list) then `g?` — or the `help` chip on the footer
 bar — opens the keymap CHEATSHEET: every finder key, built from the live `keys`
-config, in BOTH backends (the tint list and the fzf TUI). `q` / <Esc> / `g?`
+config, with the fixed keys of the list beside them. `q` / <Esc> / `g?`
 close it. The key is NORMAL-mode only on purpose: while you type, the query owns
 the keyboard.
 
@@ -70,9 +73,7 @@ the keyboard.
 When lvim-utils provides the shared dock-stack manager, every opened finder KIND
 is an entry in the dock stack — `files`, `grep`, `buffers` … each with the base
 identity `lvim-picker:<kind>`, so `:LvimPicker files` and `:LvimPicker grep` are
-two distinct instances. This applies to BOTH finder backends — the fzf-TUI
-finders (the default `fzf_tui = true`) and the Lua tint list dock through one
-layer. Only one is visible per layout at a time: opening a second finder there
+two distinct instances. Only one is visible per layout at a time: opening a second finder there
 PARKS the first (its finder spec is remembered — it stays restorable on the
 stack), and re-opening a live kind rebuilds it fresh in place (no duplicate).
 
@@ -133,7 +134,7 @@ Merges {opts} into the live config in place (a nested `fuzzy` subtable merges
 into `lvim-picker.fuzzy.config`) and registers `:LvimPicker`. Optional. See the
 README for the FULL default config; the option set is documented as
 `LvimPickerConfig` in `lua/lvim-picker/config.lua` (layout, dock = { dock_stack,
-force }, fzf_tui, keys, marker, footer, title_pos, source, prompt, caret, hl,
+force }, keys, marker, footer, title_pos, source, prompt, caret, hl,
 preview, …). `title_pos` ("center" default) aligns the finder title the same
 way in every layout; the title text stays dynamic per finder.
 See
@@ -141,7 +142,7 @@ See
 per-call `opts.dock_stack` / `opts.force` passthrough.
 
                                                           *lvim-picker-streaming*
-The streamed tint finders (files / directories / git_files) ingest their
+The streamed finders (files / directories / git_files) ingest their
 listing PACED: the producer's stdout is queued and drained in bounded
 main-thread slices of `stream_slice_ms` (default 4 ms) with a yield to the
 event loop between slices, while the growing pool re-renders (rows + live
@@ -160,7 +161,7 @@ path (which still needs the library to rank). Selection, `<CR>` open, preview, m
 and the result sort all work identically on either path.
 
                                                                 *lvim-picker-grep*
-The Lua tint grep HOLDS EVERY ripgrep match in the native matcher (like fzf keeps
+The grep HOLDS EVERY ripgrep match in the native matcher (like fzf keeps
 them in its own process), so there is NO browse cap and the counter climbs to the
 REAL total as rg streams (e.g. `403127/403127`, never an under-reported 10000). It
 has two modes, toggled with `<C-g>` (config `keys.grep_filter`) like fzf's Regex ⇄
@@ -198,8 +199,7 @@ the truth) but its overflow bytes are DISCARDED in the read callback, never
 buffered → no `E41: out of memory`. `grep_max_columns` (default 512) caps each
 result line's length (rg's `--max-columns` + `--max-columns-preview`) so a minified
 / cache / log file's megabyte-long line can't blow the blob up. Confirm always
-opens the focused row at its line:col. The fzf-TUI grep backend
-is unchanged — fzf owns its own result set and its native `<ctrl-g>`.
+opens the focused row at its line:col.
 
                                                              *lvim-picker-preview*
 The FILE and DIRECTORY previews (files / grep / git_files / oldfiles / directories)

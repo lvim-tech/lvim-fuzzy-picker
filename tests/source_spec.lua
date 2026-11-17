@@ -1,4 +1,4 @@
--- lvim-picker.source: the directory listing a preview shows, sync (fzf backend) and async (tint list).
+-- lvim-picker.source: what the async preview reads — a file's lines, or a directory's listing.
 
 local source = require("lvim-picker.source")
 
@@ -14,15 +14,6 @@ local function tree()
 end
 
 describe("lvim-picker.source: directory previews")
-
-it("list_dir lists like `ls -A`: hidden entries in, `.` and `..` out, by name", function()
-    eq({ ".hidden", "a.txt", "b.lua", "sub" }, source.list_dir(tree()))
-end)
-
-it("list_dir caps the entries and answers {} for a missing directory", function()
-    eq({ ".hidden", "a.txt" }, source.list_dir(tree(), 2))
-    eq({}, source.list_dir(vim.fn.tempname()))
-end)
 
 it("the async preview of a directory is its listing", function()
     local got

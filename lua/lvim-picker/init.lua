@@ -1,4 +1,4 @@
--- lvim-picker: the native fuzzy-finder — the tint-striped Lua list backend plus the ready-made finders.
+-- lvim-picker: the native fuzzy-finder — the tint-striped Lua list plus the ready-made finders.
 -- A native fuzzy finder built on the lvim-ui.surface chassis: a centred float with a typed query
 -- INPUT band on top (a surface header input), a results LIST panel on the left and a scrollable PREVIEW
 -- panel on the right — the diagnostics-peek layout, but fuzzy. The MATCHING ENGINE is lvim-fuzzy — the
@@ -19,9 +19,8 @@ local utils = require("lvim-utils.utils")
 local iconlib = require("lvim-utils.icons")
 local ui_filters = require("lvim-ui.filters")
 local preview = require("lvim-ui.preview")
--- The listing commands / preview reader / async streamer live in picker.source so BOTH backends (this tint
--- one and the fzf-TUI one) list + ignore identically (config.source). Aliased as locals to keep the
--- call sites here unchanged.
+-- The listing commands / preview readers / async streamers live in picker.source (what they list and ignore
+-- is `config.source`). Aliased as locals to keep the call sites short.
 local source = require("lvim-picker.source")
 local scope = require("lvim-picker.scope")
 local has = source.has
@@ -41,99 +40,13 @@ local function preview_span(lnum)
     return math.max(500, (lnum or 0) + 200)
 end
 
---- The fzf-TUI backend for the heavy / command-driven finders (files / grep / git_files / directories /
---- buffers), or nil when it is disabled (`config.fzf_tui == false`) or unavailable (no fzf / mkfifo).
---- When present, those finders let the real fzf TUI own the list (instant over huge trees, continuous live
---- updates); the structured finders (lsp / diagnostics / …) always use the tint-striped list below.
----@return table?
---- @param opts? table  a per-call `opts.backend = "fzf"|"tint"` FORCES the backend (used by the C-]/C-[ swap);
---- nil defers to `config.fzf_tui`.
-local function fzf_backend(opts)
-    local force = opts and opts.backend
-    if force == "tint" then
-        return nil
-    end
-    if force ~= "fzf" and (config or {}).fzf_tui == false then
-        return nil
-    end
-    local ok, b = pcall(require, "lvim-picker.fzf")
-    return (ok and b.available() and b) or nil
-end
-
 local M = {}
 
--- forward declaration: opens a finder through the fzf-TUI backend MANAGED by the dock stack (defined far
--- below, after the dock layer it depends on). `pick_items` + the command-driven finders funnel their fzf
--- branch through it, so both backends dock through the SAME layer.
-local open_fzf
-
---- Reopen the CURRENT finder in the OTHER backend (tint ⇄ fzf) — bound to the swap keys INSIDE the picker only
---- (never global). Each command-driven finder installs an `opts.reopen(backend)` closure that re-invokes ITSELF
---- with the backend forced, capturing its ORIGINAL opts (before the per-backend spec was merged in) so no
---- backend's spec fields leak into the other's open. The reopen routes through the dock, which REPLACES the
---- live entry of that kind in place. `cur` is the backend the swap fires FROM; the query is not carried (retype).
----@param cur "tint"|"fzf"
----@param opts table
-local function swap_backend(cur, opts)
-    if type(opts.reopen) ~= "function" then
-        vim.notify("lvim-picker: this finder has no alternate backend", vim.log.levels.INFO)
-        return
-    end
-    -- one swap at a time; a held key's repeats are swallowed meanwhile (see lvim-picker.swap)
-    local keys = vim.tbl_get(config or {}, "keys", "swap_backend") or {}
-    require("lvim-picker.swap").run(type(keys) == "string" and { keys } or keys, function()
-        opts.reopen((cur == "fzf") and "tint" or "fzf")
-    end)
-end
-
---- Install `opts.reopen(backend)` on a command-driven finder so the swap keys can re-open it in the OTHER
---- backend. Captures the finder's CLEAN opts (its key + user fields — BEFORE the per-backend spec is merged in),
---- dispatching by `opts.key` (== its `M.<kind>` entry name), so no backend's spec leaks into the other's open.
---- Call at the finder's entry, right after `opts.key`.
----@param opts table
-local function with_backend_swap(opts)
-    opts.reopen = opts.reopen
-        or function(backend)
-            local fn = opts.key and M[opts.key]
-            if type(fn) == "function" then
-                fn(vim.tbl_extend("force", opts, { backend = backend }))
-            end
-        end
-end
-
---- Route a Lua-ITEM finder through the fzf-TUI backend when available, else the tint list — so EVERY finder
---- shares one backend (only the structured lsp/diagnostics lists stay tint). Each item is encoded as
---- `idx\ttext`; fzf shows/matches only the text (`--with-nth`), and the idx recovers the full item on
---- selection, so the finder keeps its own `preview` / `on_confirm` / `on_cancel` for BOTH backends.
----@param spec { title: string, items: table[], icon?: boolean, preview?: function, preview_file_of?: function, on_confirm?: function, on_cancel?: function, opts?: table }
+--- Open a finder over a Lua list of ITEMS (buffers, recent files, marks, quickfix, …) with its own preview
+--- and callbacks; `opts` (the caller's per-call options) win over the spec.
+---@param spec { title: string, items: table[], preview?: function, preview_file_of?: function, on_confirm?: function, on_cancel?: function, opts?: table }
 local function pick_items(spec)
     local items = spec.items or {}
-    local b = fzf_backend(spec.opts)
-    if b then
-        local contents = {}
-        for i, it in ipairs(items) do
-            -- `spec.icon` → prefix the coloured ft devicon (display only; the parse recovers the item by INDEX,
-            -- so the icon never has to be stripped). Keyed on the file path when present, else the text.
-            local icon = spec.icon and source.file_icon(it.path or it.text) or ""
-            contents[i] = i .. "\t" .. icon .. ((it.text or ""):gsub("[\t\n]", " "))
-        end
-        open_fzf(
-            b,
-            vim.tbl_extend("force", {
-                title = spec.title,
-                contents = contents,
-                fzf_args = { "--delimiter=\t", "--with-nth=2.." }, -- hide the leading index, show/match the text
-                parse = function(line)
-                    local idx = tonumber(line:match("^(%d+)\t"))
-                    return (idx and items[idx]) or { text = line }
-                end,
-                preview = spec.preview,
-                on_confirm = spec.on_confirm,
-                on_cancel = spec.on_cancel,
-            }, spec.opts or {})
-        )
-        return
-    end
     M.open(vim.tbl_extend("force", {
         title = spec.title,
         items = items,
@@ -423,20 +336,17 @@ M._preview_matches = preview_matches -- internal test seam
 -- SAME (kind, layout) RE-SHOWS that one entry (dedup) — since a finder has no meaningful "parked query", the
 -- re-show REBUILDS that kind fresh in place (still the single entry for that (kind, layout)).
 --
--- ONE dock layer serves BOTH backends (the tint list here AND the fzf-TUI backend in picker/fzf.lua). A
--- (kind, layout) slot is remembered by a `rebuild` CLOSURE (`pending[sk]`) that re-materialises THAT slot's
--- surface with the backend it was opened with — the tint list (`build(opts, kind)`) or the fzf TUI
--- (`require("lvim-picker.fzf").open(fzf_opts)`). The shared `route(managed, kind, layout, meta, rebuild, slot)`
+-- A (kind, layout) slot is remembered by a `rebuild` CLOSURE (`pending[sk]`) that re-materialises THAT slot's
+-- surface (`build(opts, kind)`). `route(managed, kind, layout, meta, rebuild, slot)`
 -- does the managed wiring (remember the rebuild, refresh the consumer's name / icon / anchored force slot,
 -- `dock.open` — STORING the returned entry key in `entry_keys[sk]`) or, when un-managed (no manager / no key /
 -- `dock_stack = false`), just calls `rebuild()` directly (the classic
 -- `source.close_active` replace-in-place). The consumer's `show` runs the remembered `rebuild`, `hide` parks
 -- the live surface (close it, KEEP the rebuild → restorable). A NATURAL close (confirm / cancel / q / :q, or
 -- replaced) also PARKS + REMEMBERS (via `dock.parked(entry_keys[sk])`): the entry stays alive, cyclable and in
--- the `<Leader>m` menu — only `<Leader>x` (the consumer's `close`) forgets the rebuild + drops it. Whichever
--- backend built it exposes its live `state` via `live[sk]`, so the consumer's
--- `buffers` / `focus` / `is_current` work uniformly (the tint state carries `.input_buf`, the fzf state
--- `.term_buf`; both carry `.st` / `.list_pan` / `.preview_pan`).
+-- the `<Leader>m` menu — only `<Leader>x` (the consumer's `close`) forgets the rebuild + drops it. The live
+-- surface `state` is exposed via `live[sk]` (`.st` / `.input_buf` / `.list_pan` / `.preview_pan`), so the
+-- consumer's `buffers` / `focus` / `is_current` read it.
 
 ---@type table|false|nil  cached lvim-utils.dock module (nil = unprobed, false = probed & absent)
 local dock_mod = nil
@@ -468,11 +378,11 @@ local function slot_key(kind, layout)
 end
 ---@type table<string, table>   slot key → the memoised LvimDockConsumer handle (one per (kind, layout))
 local consumers = {}
----@type table<string, fun()>   slot key → the REBUILD closure that re-materialises that finder on show (either
---- backend — the tint `build` or the fzf-TUI `open`); nil = forgotten/dead (the dock's `is_alive` reads this).
+---@type table<string, fun()>   slot key → the REBUILD closure that re-materialises that finder on show; nil =
+--- forgotten/dead (the dock's `is_alive` reads this).
 local pending = {}
----@type table<string, table>   slot key → the live surface `state` while it exists (nil = parked). Either backend's
---- state; the consumer reads `.st` / `.list_pan` / `.preview_pan` + `.input_buf` (tint) or `.term_buf` (fzf).
+---@type table<string, table>   slot key → the live surface `state` while it exists (nil = parked); the consumer
+--- reads `.st` / `.list_pan` / `.preview_pan` / `.input_buf`.
 local live = {}
 ---@type table<string, string>  slot key → the dock ENTRY KEY (id, layout) returned by `dock.open` — passed back
 --- to the lifecycle APIs (`parked`/`refresh_leader`/`dropped`) for THIS entry (never a reconstructed key).
@@ -504,9 +414,8 @@ local KIND_META = {
 -- forward declaration: `build` constructs the finder surface; a consumer's `show` calls it to materialise a kind
 local build
 
---- Resolve the dock KIND key for a finder open (either backend): an explicit `opts.key` wins; else a stable
---- slug from the title; else nil (no stable identity ⇒ un-managed, so it docks directly rather than force a
---- bad key). Typed on the minimal shape both `LvimPickerOpts` and `LvimFzfOpts` satisfy.
+--- Resolve the dock KIND key for a finder open: an explicit `opts.key` wins; else a stable slug from the title;
+--- else nil (no stable identity ⇒ un-managed, so it docks directly rather than force a bad key).
 ---@param opts { key?: string, title?: string }
 ---@return string?
 local function resolve_key(opts)
@@ -538,8 +447,7 @@ local function kind_buffers(sk)
             out[#out + 1] = b
         end
     end
-    add(st.input_buf) -- tint: the query INPUT band buffer
-    add(st.term_buf) -- fzf: the terminal buffer hosting the fzf TUI (one of input_buf/term_buf is nil)
+    add(st.input_buf) -- the query INPUT band buffer
     add(st.list_pan and st.list_pan.buf)
     add(st.preview_pan and st.preview_pan.buf)
     add(st.st and st.st.container_buf)
@@ -573,8 +481,8 @@ local function kind_windows(sk)
     return out
 end
 
---- Build (once, memoised in `consumers[sk]`) + return the dock consumer for finder `kind` in `layout` —
---- backend-agnostic (the tint list or the fzf TUI). There is ONE consumer PER (kind, layout): `id` is the
+--- Build (once, memoised in `consumers[sk]`) + return the dock consumer for finder `kind` in `layout`. There is
+--- ONE consumer PER (kind, layout): `id` is the
 --- UNCHANGED base identity (`"lvim-picker:"..kind`) — the dock composes the (id, layout) entry key — and
 --- `layout` is FIXED for this slot, so opening `files` in float and `files` in bottom are two independent
 --- consumers / surfaces / dock entries. `show` runs this slot's remembered `rebuild` (tearing down any surface
@@ -610,7 +518,7 @@ local function get_consumer(kind, layout)
                 return
             end
             teardown_surface() -- a re-open of the visible slot rebuilds fresh in place
-            rebuild() -- backend-specific: the tint `build(opts, kind)` or the fzf-TUI `open(fzf_opts)`
+            rebuild() -- the finder's `build(opts, kind)`
         end,
         hide = teardown_surface, -- PARK: close the surface, KEEP the rebuild (restorable on the stack)
         close = function()
@@ -627,8 +535,7 @@ local function get_consumer(kind, layout)
             if not st then
                 return
             end
-            -- The fzf backend registers its own `dock_focus` (re-enter the fzf terminal list) via the dock
-            -- hooks; the tint backend has none, so fall back to focusing its INPUT band (or the container).
+            -- a finder may register its own `dock_focus`; else focus its INPUT band (or the container)
             if st.dock_focus then
                 pcall(st.dock_focus)
                 return
@@ -669,8 +576,6 @@ end
 ---@field items? any[]  STATIC candidates (strings, or tables — see `format`), fuzzy-filtered as you type
 ---@field source? fun(query: string, cb: fun(items: any[]))  a LIVE source: each query produces the results (e.g. ripgrep); use instead of `items`
 ---@field source_raw? boolean  the `source` cb already delivers GRID items (`{ text, _src, … }`), so skip normalising them — for a progressive source that appends into one growing list (live grep)
----@field backend? "fzf"|"tint"  PER-CALL backend force (used by the C-] swap): "fzf" = the fzf TUI, "tint" = the Lua list; nil = defer to `config.fzf_tui`
----@field reopen? fun(backend: "fzf"|"tint")  installed by `with_backend_swap` on the command finders; the C-] swap key calls it to reopen this finder in the other backend
 ---@field count_files? boolean  count the tree's files in the background (via the files list command) and use it as the counter's TOTAL — grep shows `matches found / total files`
 ---@field stream? fun(feed: fun(raw: any[]), done: fun()): fun()  an ASYNC streaming producer (e.g. `fd`): feeds candidates in incrementally; returns a cancel fn
 ---@field blob_stream? fun(feed_bytes: fun(data: string), done: fun()): fun()  a RAW-BYTE streaming producer (GAP-5): feeds stdout chunks straight to the native matcher (no Lua per-row work); needs `blob_item`; requires ABI ≥ 5
@@ -725,7 +630,7 @@ build = function(opts, kind)
     opts.layout = opts.layout or (config or {}).layout or "area"
     -- The (kind, layout) slot key this managed open files its state under (nil ⇒ un-managed).
     local sk = kind and slot_key(kind, opts.layout) or nil
-    -- UN-MANAGED only: a finder already open (EITHER backend)? Close it FIRST via the shared registry so this
+    -- UN-MANAGED only: a finder already open? Close it FIRST via the shared registry so this
     -- open replaces it in place. In the MANAGED path the DOCK enforces one-visible-per-layout — it has already
     -- PARKED the previous consumer (keeping it on the stack), so we must NOT destroy it here.
     if not kind then
@@ -850,7 +755,7 @@ build = function(opts, kind)
         return q
     end
 
-    -- ── multi-select marking + quickfix (config.keys.mark / .quickfix, shared with the fzf backend) ──
+    -- ── multi-select marking + quickfix (config.keys.mark / .quickfix) ──
     local pkc = (config or {})
     local kcfg = pkc.keys or {}
     local marker = pkc.marker or "➤"
@@ -1358,24 +1263,27 @@ build = function(opts, kind)
                 -- NOTE: <C-j>/<C-k> are the surface's SECTOR navigation (list → footer bar → … and, when
                 -- hosted, on past the footer DOWN into the messages via `on_escape_below`). We do NOT bind
                 -- them here — that would shadow the stack navigation.
-                -- multi-select: the mark key toggles the row's mark + advances (same as the fzf backend); the
+                -- multi-select: the mark key toggles the row's mark + advances; the
                 -- quickfix key sends the marked rows (or the focused one) to the quickfix list. The mark key
                 -- (Tab) is bound AFTER the chassis, so it overrides the list ⇄ preview toggle on the LIST (the
                 -- preview is still reachable via `<C-l>`); both keys come from config.keys.
                 map(keylist(kcfg.mark), mark)
                 map(keylist(kcfg.quickfix), to_quickfix)
+                -- open in a split (config.keys.open_methods.<method>.n — plain keys, the list is in normal mode)
+                for method, m in pairs({ vsplit = "vsplit", hsplit = "split" }) do
+                    local km = (kcfg.open_methods or {})[method]
+                    if type(km) == "table" and km.n then
+                        map(keylist(km.n), function()
+                            confirm(m)
+                        end)
+                    end
+                end
                 -- (grep) Ctrl-g toggles GREP ⇄ FILTER mode from the normal-mode list too.
                 if grep_toggle then
                     map(keylist(kcfg.grep_filter), grep_toggle)
                 end
                 if scope_toggle then
                     map(keylist(kcfg.grep_scope), scope_toggle)
-                end
-                -- Swap the finder's backend (tint ⇄ fzf) from the normal list — command finders only.
-                if opts.reopen then
-                    map(keylist(kcfg.swap_backend), function()
-                        swap_backend("tint", opts)
-                    end)
                 end
                 -- the keymap CHEATSHEET (normal mode only — in the prompt `g?` would type into the query).
                 map(keylist(kcfg.help), function()
@@ -2115,12 +2023,12 @@ build = function(opts, kind)
         end
     end
     -- Coalesce the picker teardown with whatever a consumer opens in its callback (lvim-space re-opening a
-    -- panel on the search step-back) into ONE zone reflow — identical to the fzf backend's `with_handoff` — so
+    -- panel on the search step-back) into ONE zone reflow — so
     -- the shared area zone and its backdrop never collapse-then-regrow between the two surfaces (the flicker on
     -- the way back). `surface.zone_handoff` routes to the host zone's coalescer (msgarea's lazyredraw + single
     -- flush), so close + re-open paint as one frame. Off the area zone there is no shared zone to coalesce.
     local function with_handoff(fn)
-        -- HOLD the backdrop across the teardown + the tick after it — for EVERY layout (same as the fzf backend):
+        -- HOLD the backdrop across the teardown + the tick after it — for EVERY layout:
         -- closing this surface drops focus to the editor, and Neovim applies that focus-fall a beat after the
         -- frame, so the focus-aware veil would lift (bright editor) before the consumer's reopened panel re-dims
         -- it. The hold suppresses that lift; the scheduled release reconciles against the settled focus. The lift
@@ -2151,7 +2059,10 @@ build = function(opts, kind)
     -- sees this finder as the area occupant and closes it in the BACKGROUND after its own windows exist + hold
     -- focus (no editor focus-fall / tremble). The explicit `st.close()` after is then a no-op (already closed).
     -- Default (nil) keeps close-first, which other consumers rely on.
-    confirm = function()
+    --- Confirm the focused row. `method` ("vsplit" | "split") first opens a split of the window the finder
+    --- was opened from, so the consumer's `on_confirm` (which opens the item in the CURRENT window) lands there.
+    ---@param method? "vsplit"|"split"
+    confirm = function(method)
         local it = state.filtered[state.sel]
         state.handled = true -- we own the outcome → on_close must not also fire on_cancel
         with_handoff(function()
@@ -2168,6 +2079,12 @@ build = function(opts, kind)
             else
                 if state.st then
                     state.st.close()
+                end
+                if method and it then
+                    if opener and api.nvim_win_is_valid(opener) then
+                        api.nvim_set_current_win(opener)
+                    end
+                    vim.cmd(method)
                 end
                 route()
             end
@@ -2224,6 +2141,14 @@ build = function(opts, kind)
                 { key = "<CR>", name = "open" },
                 { key = "C-j/k", name = "move" },
             }
+        end
+        do -- open in a split: `v`/`x` on the list, `C-v`/`C-x` while typing (config.keys.open_methods)
+            local om = kcfg.open_methods or {}
+            local side = ctx == "list" and "n" or "i"
+            local v, x = (om.vsplit or {})[side], (om.hsplit or {})[side]
+            if v and x then
+                hints[#hints + 1] = { key = klabel(v) .. "/" .. klabel(x):gsub("^C%-", ""), name = "split" }
+            end
         end
         if preview_provider then
             hints[#hints + 1] = { key = "C-d/u", name = "preview" }
@@ -2533,11 +2458,23 @@ build = function(opts, kind)
                         if opts.grep and state.grep_mode == "filter" and state.update_mode then
                             vim.schedule(state.update_mode)
                         end
-                        -- the typed-text caret (config.caret) — same as the fzf finder. Through the
+                        -- the typed-text caret (config.caret). Through the
                         -- cursor module so it coexists with cursor-hiding; cleared on close.
                         pcall(require("lvim-utils.cursor").mark_cursor_buffer, buf, source.caret_fragment("i-ci-ve"))
                         local function imap(lhs, fn)
                             vim.keymap.set("i", lhs, fn, { buffer = buf, nowait = true, silent = true })
+                        end
+                        -- open in a split while typing (config.keys.open_methods.<method>.i — Ctrl chords)
+                        for method, m in pairs({ vsplit = "vsplit", hsplit = "split" }) do
+                            local km = (kcfg.open_methods or {})[method]
+                            if type(km) == "table" and km.i then
+                                for _, k in ipairs(keylist(km.i)) do
+                                    imap(k, function()
+                                        vim.cmd("stopinsert")
+                                        confirm(m)
+                                    end)
+                                end
+                            end
                         end
                         imap("<C-j>", function()
                             move(1)
@@ -2571,16 +2508,6 @@ build = function(opts, kind)
                         if scope_toggle then
                             for _, k in ipairs(keylist(kcfg.grep_scope)) do
                                 imap(k, scope_toggle)
-                            end
-                        end
-                        -- Swap the finder's backend (tint ⇄ fzf) while typing — command finders only.
-                        if opts.reopen then
-                            for _, k in ipairs(keylist(kcfg.swap_backend)) do
-                                -- NORMAL too: the prompt can be in normal mode for a moment (a swap back from
-                                -- fzf), and an unbound <C-]> there is Neovim's jump-to-tag (E349)
-                                vim.keymap.set({ "i", "n" }, k, function()
-                                    swap_backend("tint", opts)
-                                end, { buffer = buf, nowait = true, silent = true })
                             end
                         end
                         -- <Esc> / <C-f> drop to NORMAL on the list (where the filter hotkeys
@@ -2860,14 +2787,12 @@ end
 --- reads it), refresh the consumer's live name / icon / layout / anchored `slot` (force) override, and
 --- SHOW-OR-CREATE it through the dock — which dedups by id and enforces one-visible-per-layout (parking any
 --- OTHER visible consumer there), then calls the consumer's `show`, which runs the rebuild. UN-MANAGED (no
---- manager / no key / `dock_stack = false`): just run `rebuild()` (the classic replace-in-place). ONE layer for
---- BOTH backends — only the rebuild differs (`build(opts, key)` for the tint list, `fzf.open(fzf_opts)` for the
---- fzf TUI).
+--- manager / no key / `dock_stack = false`): just run `rebuild()` (the classic replace-in-place).
 ---@param managed boolean  route through the dock stack (dock present AND `kind` AND the effective `dock_stack`)
 ---@param kind string?    the dock kind (nil ⇒ un-managed)
 ---@param layout string  the dock layout this kind occupies ("area"|"bottom"|"float")
 ---@param meta { title?: string, icon?: string }  entry display name / glyph source (falls back to KIND_META)
----@param rebuild fun()  (re)materialises this (kind, layout) slot's surface from its remembered opts (backend-specific)
+---@param rebuild fun()  (re)materialises this (kind, layout) slot's surface from its remembered opts
 ---@param slot? table  the consumer's anchored geometry (force) override for `dock.slot` (nil = inherit central)
 local function route(managed, kind, layout, meta, rebuild, slot)
     local d = get_dock()
@@ -2922,78 +2847,12 @@ function M.open(opts)
     end, eff_force)
 end
 
---- Open a finder through the fzf-TUI backend MANAGED by the dock stack, exactly as `M.open` manages the tint
---- list — so `:LvimPicker files` / `grep` / … participate in the dock stack under the DEFAULT `fzf_tui = true`
---- config, not only the tint fallback. When managed it injects the dock hooks the fzf backend calls back
---- through (register the live fzf surface on open; re-arm the leader owner after a keep-open restart;
---- PARK+REMEMBER on a self/external close) and routes with a rebuild that re-invokes `fzf.open`. Un-managed (no
---- manager / no key) it opens fzf in place (fzf's own `source.close_active` replace). ONE dock layer — the
---- consumer contract is NOT duplicated into fzf.lua; the backend only reports its live state + self-close.
----@param b table              the fzf backend (`require("lvim-picker.fzf")`)
----@param fzf_opts LvimFzfOpts  the fully-built fzf finder spec (carries `key` + `title`)
-open_fzf = function(b, fzf_opts)
-    fzf_opts.layout = fzf_opts.layout or (config or {}).layout or "area"
-    local key = resolve_key(fzf_opts)
-    -- Effective dock_stack: a per-call `fzf_opts.dock_stack` overrides the plugin's own `config.dock.dock_stack`.
-    local stack = fzf_opts.dock_stack
-    if stack == nil then
-        stack = (config or {}).dock and config.dock.dock_stack
-    end
-    local managed = get_dock() ~= nil and key ~= nil and stack ~= false
-    if managed then
-        ---@cast key string  `managed` implies `key ~= nil` (LS can't narrow it across the `and` on its own)
-        -- The (kind, layout) slot this fzf open files its live state / dock bookkeeping under — so `files` in
-        -- float and `files` in bottom are two independent fzf surfaces / dock entries.
-        local sk = slot_key(key, fzf_opts.layout)
-        -- The dock hooks fzf.open calls back through: `on_open` hands us the live surface `state` (so the
-        -- consumer's buffers / focus / is_current read it, and `hide` can park it) + wires its `dock_focus`
-        -- (re-enter the fzf terminal list); `on_restart` re-installs the leader owner (by the STORED entry key)
-        -- after a keep-open restart swaps the terminal buffer; `on_close` (run inside fzf's surface on_close)
-        -- MIRRORS the tint bookkeeping — a dock-driven teardown (park/close, flagged `dock_teardown`) is silent,
-        -- a self/external close (confirm/cancel/:q) PARKS + REMEMBERS the entry (keeps `pending[sk]`,
-        -- `d.parked`s it by the stored key → stays alive / cyclable / in the menu, collapses the layout, focus
-        -- returns to the editor). Only `<Leader>x` drops it.
-        fzf_opts.dock = {
-            on_open = function(state)
-                state.dock_focus = function()
-                    if state.st and state.st.focus_block then
-                        pcall(state.st.focus_block, "list")
-                    end
-                end
-                live[sk] = state
-            end,
-            on_restart = function()
-                local d = get_dock()
-                if d and d.refresh_leader and entry_keys[sk] then
-                    d.refresh_leader(entry_keys[sk])
-                end
-            end,
-            on_close = function(state)
-                if not state.dock_teardown then
-                    local d = get_dock()
-                    if d and entry_keys[sk] then
-                        pcall(d.parked, entry_keys[sk])
-                    end
-                end
-                if live[sk] == state then
-                    live[sk] = nil
-                end
-            end,
-        }
-    end
-    local eff_force = (fzf_opts.force and fzf_opts.force[fzf_opts.layout])
-        or ((config or {}).dock and config.dock.force and config.dock.force[fzf_opts.layout])
-    route(managed, key, fzf_opts.layout, { title = fzf_opts.title, icon = fzf_opts.icon }, function()
-        b.open(fzf_opts)
-    end, eff_force)
-end
 
 --- A ready finder over the listed buffers; confirming switches to the chosen buffer, with a content preview.
 ---@param opts? table  forwarded to M.open
 function M.buffers(opts)
     opts = opts or {}
     opts.key = opts.key or "buffers"
-    with_backend_swap(opts) -- enable the C-] backend swap (tint ⇄ fzf) for this finder
     local items = {}
     for _, b in ipairs(api.nvim_list_bufs()) do
         if vim.bo[b].buflisted then
@@ -3018,45 +2877,6 @@ function M.buffers(opts)
             return vim.fn.readfile(name, "", 500), ft
         end
         return { "[no preview]" }, ""
-    end
-    local fb = fzf_backend(opts)
-    if fb then
-        -- Encode each entry as `bufnr\tname`; fzf shows/matches only field 2 (the name) via
-        -- `--delimiter`/`--with-nth`, but hands back the whole line so we recover the bufnr.
-        local contents = {}
-        for _, it in ipairs(items) do
-            contents[#contents + 1] = ("%d\t%s%s"):format(it.bufnr, source.file_icon(it.text), it.text)
-        end
-        open_fzf(
-            fb,
-            vim.tbl_extend("force", {
-                title = "Buffers",
-                contents = contents,
-                fzf_args = { "--delimiter=\t", "--with-nth=2" },
-                parse = function(line)
-                    local bufnr, name = line:match("^(%d+)\t(.*)$")
-                    name = name and source.strip_icon(name) or line -- drop the leading coloured ft icon
-                    bufnr = tonumber(bufnr)
-                    -- The display `name` is the `:~:.` form, which is NOT a usable path (`~` is unexpanded, and it
-                    -- is cwd-relative) — so preview/quickfix must carry the ABSOLUTE path, resolved from the buffer
-                    -- (like oldfiles does). "[No Name]" buffers stay text-only.
-                    local abs = (bufnr and api.nvim_buf_is_valid(bufnr)) and api.nvim_buf_get_name(bufnr) or ""
-                    if abs == "" and name ~= "[No Name]" then
-                        abs = vim.fn.fnamemodify(name, ":p")
-                    end
-                    return { bufnr = bufnr, text = name, path = (abs ~= "") and abs or nil }
-                end,
-                preview = function(it)
-                    return buf_preview(it.bufnr, it.path or it.text or "")
-                end,
-                on_confirm = function(it)
-                    if it and it.bufnr and api.nvim_buf_is_valid(it.bufnr) then
-                        api.nvim_set_current_buf(it.bufnr)
-                    end
-                end,
-            }, opts)
-        )
-        return
     end
     M.open(vim.tbl_extend("force", {
         title = "Buffers",
@@ -3097,8 +2917,7 @@ end
 
 -- ── file / directory / grep finders ────────────────────────────────────────────
 -- The listing commands (file_list_cmd / dir_list_cmd), the preview reader (read_preview) and the async
--- streamer (spawn_stream) are aliased from picker.source at the top of the file, so this tint backend and
--- the fzf-TUI backend share one source layer.
+-- streamer (spawn_stream) are aliased from picker.source at the top of the file.
 
 --- Configure `spec` (a tint finder whose candidates ARE their paths — files / directories / git_files) to
 --- STREAM `list_cmd` into the pool. GAP-5: when the native matcher supports blob ingestion (ABI ≥ 5) the raw
@@ -3169,33 +2988,7 @@ end
 ---@param opts? table
 function M.files(opts)
     opts = opts or {}
-    opts.key = opts.key or "files" -- dock kind key (tint/managed path); the fzf backend ignores it
-    with_backend_swap(opts) -- enable the C-] backend swap (tint ⇄ fzf) for this finder
-    local b = fzf_backend(opts)
-    if b then
-        -- fzf runs `file_list_cmd()` as its producer (FZF_DEFAULT_COMMAND) and owns the list; we keep the
-        -- real-Neovim preview + the open action.
-        open_fzf(
-            b,
-            vim.tbl_extend("force", {
-                title = "Files",
-                cmd = source.with_icons(file_list_cmd()),
-                parse = function(line)
-                    return { path = source.strip_icon(line) }
-                end,
-                fzf_args = { "--nth", "2.." }, -- fuzzy-match the path, not the leading coloured icon
-                preview = function(it)
-                    return read_preview(it.path)
-                end,
-                on_confirm = function(it)
-                    if it and it.path then
-                        vim.cmd.edit(vim.fn.fnameescape(it.path))
-                    end
-                end,
-            }, opts)
-        )
-        return
-    end
+    opts.key = opts.key or "files" -- dock kind key
     local spec = {
         title = "Files",
         on_confirm = function(it)
@@ -3217,30 +3010,6 @@ end
 function M.directories(opts)
     opts = opts or {}
     opts.key = opts.key or "directories"
-    with_backend_swap(opts) -- enable the C-] backend swap (tint ⇄ fzf) for this finder
-    local b = fzf_backend(opts)
-    if b then
-        open_fzf(
-            b,
-            vim.tbl_extend("force", {
-                title = "Directories",
-                cmd = source.with_dir_icon(dir_list_cmd()),
-                parse = function(line)
-                    return { path = source.strip_icon(line) }
-                end,
-                fzf_args = { "--nth", "2.." }, -- match the path, not the leading folder icon
-                preview = function(it)
-                    return source.list_dir(it.path, 2000), ""
-                end,
-                on_confirm = function(it)
-                    if it and it.path then
-                        vim.cmd.cd(vim.fn.fnameescape(it.path))
-                    end
-                end,
-            }, opts)
-        )
-        return
-    end
     local spec = {
         title = "Directories",
         on_confirm = function(it)
@@ -3263,54 +3032,8 @@ end
 function M.grep(opts)
     opts = opts or {}
     opts.key = opts.key or "grep" -- a fixed-query variant (cword / …) sets its own key BEFORE calling here
-    with_backend_swap(opts) -- enable the C-] backend swap (tint ⇄ fzf) for this finder
     if not has("rg") then
         vim.notify("lvim-picker.grep needs ripgrep (rg)", vim.log.levels.WARN)
-        return
-    end
-    -- Parse a ripgrep `--vimgrep` line into a location item. The col is followed by `:text` in the 1-row
-    -- layout and by `\n    text` in the fzf-lua 2-row layout, so the match stops right after the col number.
-    local function parse_grep(line)
-        line = source.strip_icon(line) -- drop the leading coloured ft icon (+ any ANSI) before parsing
-        -- The record is either the 1-row `path:lnum:col:text` or the fzf-lua 2-row `path:lnum:col\n    text`.
-        -- Split off the second row FIRST so its embedded newline (and indent) never reach the quickfix text;
-        -- parse the location from the header, and keep the matched text as the trimmed remainder.
-        local head, tail = line:match("^([^\n]*)\n%s*(.*)$")
-        head = head or line
-        local file, lnum, col, rest = head:match("^(.-):(%d+):(%d+):?(.*)$")
-        if file then
-            return { path = file, lnum = tonumber(lnum), col = tonumber(col), text = tail or rest or "" }
-        end
-        return { path = line, text = line }
-    end
-    local b = fzf_backend(opts)
-    if b then
-        -- fzf live mode: each keystroke RELOADS ripgrep with the query — fzf re-renders the matches
-        -- continuously. fzf does no fuzzy ranking of its own (`--disabled`); rg IS the search.
-        local backend = {
-            title = opts.title or "Grep",
-            parse = parse_grep,
-            multiline = source.fzf_multiline(), -- fzf-lua 2-row layout (location row + indented text row)
-            preview = function(it)
-                local lines, ft = read_preview(it.path, preview_span(it.lnum))
-                return lines, ft, it.lnum -- focus the matched line
-            end,
-            on_confirm = function(it)
-                if it and it.path then
-                    vim.cmd.edit(vim.fn.fnameescape(it.path))
-                    pcall(api.nvim_win_set_cursor, 0, { it.lnum or 1, (it.col or 1) - 1 })
-                    vim.cmd("normal! zz")
-                end
-            end,
-        }
-        if opts.query and opts.query ~= "" then
-            -- fixed-query grep (cword / cWORD / selection / prompt): rg runs ONCE, fzf fuzzy-filters the matches
-            backend.cmd = source.grep_static_cmd(opts.query, opts.regex)
-            backend.fzf_args = { "--nth", "2.." } -- match the path/text, not the leading coloured icon
-        else
-            backend.reload = source.grep_reload(opts.regex, opts.file) -- live grep (opts.file → curbuf only)
-        end
-        open_fzf(b, vim.tbl_extend("force", backend, opts))
         return
     end
     local fixed = opts.query ~= nil and opts.query ~= "" -- a fixed-query grep (cword / cWORD / selection / …)
@@ -3503,10 +3226,7 @@ function M.oldfiles(opts)
                 vim.cmd.edit(vim.fn.fnameescape(it.path))
             end
         end,
-        preview = function(it)
-            return read_preview(it.path) -- the fzf-TUI backend's preview
-        end,
-        -- the tint list reads the file ASYNC, like files: follows the cursor while scrolling
+        -- the file is read ASYNC, like files: follows the cursor while scrolling
         preview_file_of = function(s)
             return s.path and s.path ~= "" and { path = s.path } or nil
         end,
@@ -3540,33 +3260,9 @@ end
 function M.git_files(opts)
     opts = opts or {}
     opts.key = opts.key or "git_files"
-    with_backend_swap(opts) -- enable the C-] backend swap (tint ⇄ fzf) for this finder
     local inside = run_lines({ "git", "rev-parse", "--is-inside-work-tree" })[1]
     if inside ~= "true" then
         vim.notify("lvim-picker.git_files: not inside a git work tree", vim.log.levels.WARN)
-        return
-    end
-    local b = fzf_backend(opts)
-    if b then
-        open_fzf(
-            b,
-            vim.tbl_extend("force", {
-                title = "Git files",
-                cmd = source.with_icons({ "git", "ls-files" }),
-                parse = function(line)
-                    return { path = source.strip_icon(line) }
-                end,
-                fzf_args = { "--nth", "2.." }, -- fuzzy-match the path, not the leading coloured icon
-                preview = function(it)
-                    return read_preview(it.path)
-                end,
-                on_confirm = function(it)
-                    if it and it.path then
-                        vim.cmd.edit(vim.fn.fnameescape(it.path))
-                    end
-                end,
-            }, opts)
-        )
         return
     end
     local spec = {
@@ -3720,7 +3416,7 @@ function M.marks(opts)
         items = items,
         opts = opts,
         on_confirm = jump_to,
-        preview = preview_location, -- the fzf-TUI backend, and a location whose file is open in a buffer
+        preview = preview_location, -- a location whose file is open in a buffer (shown from memory)
         preview_file_of = location_file_of, -- otherwise the file is read ASYNC (follows the cursor)
     })
 end
@@ -3777,7 +3473,7 @@ function M.quickfix(opts)
         items = items,
         opts = opts,
         on_confirm = jump_to,
-        preview = preview_location, -- the fzf-TUI backend, and a location whose file is open in a buffer
+        preview = preview_location, -- a location whose file is open in a buffer (shown from memory)
         preview_file_of = location_file_of, -- otherwise the file is read ASYNC (follows the cursor)
     })
 end
@@ -3806,7 +3502,7 @@ function M.jumplist(opts)
         items = items,
         opts = opts,
         on_confirm = jump_to,
-        preview = preview_location, -- the fzf-TUI backend, and a location whose file is open in a buffer
+        preview = preview_location, -- a location whose file is open in a buffer (shown from memory)
         preview_file_of = location_file_of, -- otherwise the file is read ASYNC (follows the cursor)
     })
 end

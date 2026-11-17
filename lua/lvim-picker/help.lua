@@ -1,10 +1,10 @@
--- lvim-picker.help: the finder's keymap CHEATSHEET — the rows both backends (the tint list and the fzf TUI)
--- share, built from the LIVE `config.keys` so a rebind is reflected and a disabled key ("" / {}) drops its
--- row. The window itself — the rows, the column alignment, the odd/even striping, the hidden cursor and the
--- colours — is the shared `lvim-ui.help` component's; nothing is themed or laid out here.
+-- lvim-picker.help: the finder's keymap CHEATSHEET, built from the LIVE `config.keys` so a rebind is
+-- reflected and a disabled key ("" / {}) drops its row; the fixed keys of the list are listed beside them. The
+-- window itself — the rows, the column alignment, the odd/even striping, the hidden cursor and the colours —
+-- is the shared `lvim-ui.help` component's; nothing is themed or laid out here.
 --
--- Every key it lists is a NORMAL-mode key (`<Esc>` off the query first): while you are typing, the query owns
--- the keyboard, so `g?` is a normal-mode chord like the picker's other plain keys (`v`, `x`, `q`).
+-- Every key it lists is a NORMAL-mode key (`<Esc>` off the query first) unless it says otherwise: while you are
+-- typing, the query owns the keyboard, so `g?` is a normal-mode chord like the picker's other plain keys.
 --
 ---@module "lvim-picker.help"
 
@@ -12,23 +12,21 @@ local config = require("lvim-picker.config")
 
 local M = {}
 
--- Key id (in `config.keys`) → description, in display order. An OPEN-METHOD row is keyed by its
--- `open_methods.<id>.n` (the normal-mode key of that method).
----@type { [1]: string, [2]: string, [3]: boolean? }[]
+-- The rows, in display order: a key id in `config.keys` (an OPEN-METHOD row is keyed by its
+-- `open_methods.<id>.n`, the list key), or a FIXED key of the list (`fixed = "<lhs>"`).
+---@type { [1]: string, [2]: string, [3]: boolean?, fixed?: string }[]
 local HELP = {
-    { "accept", "open the focused item" },
+    { "accept", "open the focused item", fixed = "<CR>" },
     { "vsplit", "open in a vertical split", true }, -- true = an open_methods entry (its `n` key)
     { "hsplit", "open in a horizontal split", true },
     { "mark", "toggle the row's mark (multi-select)" },
     { "quickfix", "send the marked rows to the quickfix list" },
-    { "preview_down", "scroll the preview down" },
-    { "preview_up", "scroll the preview up" },
+    { "preview", "scroll the preview down / up", fixed = "<C-d> / <C-u>" },
     { "grep_filter", "live grep: toggle GREP ⇄ FILTER" },
     { "grep_scope", "grep filter: scope line → path → file" },
-    { "swap_backend", "swap the backend (list ⇄ fzf TUI)" },
-    { "park", "park the finder (focus the editor, stay open)" },
-    { "nav", "move the selection" },
-    { "abort", "close the finder" },
+    { "move", "move the selection (C-j / C-k while typing)", fixed = "j / k" },
+    { "focus", "back to typing", fixed = "/ or <C-f>" },
+    { "abort", "close the finder", fixed = "q / <Esc>" },
 }
 
 --- A config key value (a single key or a LIST of keys) → the label shown in the cheatsheet; "" / {} (a
@@ -64,7 +62,7 @@ function M.show(actions)
     local items = {}
     for _, e in ipairs(HELP) do
         local lhs = e[3] and (type(om[e[1]]) == "table" and om[e[1]].n or nil) or k[e[1]]
-        local lbl = label(lhs)
+        local lbl = e.fixed or label(lhs)
         if lbl then
             items[#items + 1] = { lbl, e[2] }
         end

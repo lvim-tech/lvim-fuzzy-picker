@@ -1,6 +1,5 @@
 -- lvim-picker.health: `:checkhealth lvim-picker` — reports that the finders are loadable, their required
--- deps (lvim-ui toolkit, lvim-utils base, the lvim-fuzzy matching engine, the fzf binary for the TUI
--- backend) are present, and which optional integrations exist (lvim-hud for the statusline title overlay,
+-- deps (lvim-ui toolkit, lvim-utils base, the lvim-fuzzy matching engine) are present, and which optional integrations exist (lvim-hud for the statusline title overlay,
 -- lvim-msgarea for the area dock).
 --
 ---@module "lvim-picker.health"
@@ -63,17 +62,10 @@ function M.check()
         err("lvim-picker modules failed to load")
     end
 
-    -- The fzf TUI backend needs the fzf binary.
-    if vim.fn.executable("fzf") == 1 then
-        ok("fzf binary found (the TUI finder backend)")
-    else
-        warn("fzf not on PATH — the fzf-TUI finder backend is unavailable (the tint backend still works)")
-    end
-
     -- Optional integrations.
     if has("lvim-utils.dock") then
         ok(
-            "lvim-utils.dock present — each finder KIND is a dock-stack entry, BOTH backends (fzf-TUI + tint); "
+            "lvim-utils.dock present — each finder KIND is a dock-stack entry; "
                 .. "natural close parks+remembers (cycle <Leader>n/p, kill <Leader>x, menu <Leader>m)"
         )
         -- Report the picker's own docking mode + any per-layout force overrides (a caller can still override

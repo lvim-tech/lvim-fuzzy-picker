@@ -1,17 +1,20 @@
 # lvim-picker
 
 The fuzzy finders of the **lvim-tech** set — a unified picker (files / grep / buffers / git / LSP locations /
-diagnostics / marks / …) with a real **fzf** TUI backend for the heavy command-driven finders and a Lua
-tint-list backend for the structured ones, plus the shared fuzzy matching engine. Every finder shares one
-look and one set of keys, and docks as a centred float, a bottom dock, or the message-zone area.
+diagnostics / marks / …) on the shared fuzzy engine (lvim-fuzzy-core). Every finder shares one look and one
+set of keys, and docks as a centred float, a bottom dock, or the message-zone area.
+
+> **Breaking:** the fzf-TUI backend is gone — every finder is the Lua list, which searches with fzf's query
+> syntax on lvim-fuzzy-core (faster, see [Speed](#speed)). `fzf_tui`, `grep_multiline` and the keys
+> `swap_backend`, `park`, `nav`, `abort`, `accept`, `preview_down` / `preview_up` are no longer read. For a
+> finder in the terminal there is [lvim-fuzzy-cli](https://github.com/lvim-tech/lvim-fuzzy-cli).
 
 ## Requirements
 
 Requires **Neovim >= 0.12.x**, [lvim-utils](https://github.com/lvim-tech/lvim-utils),
 [lvim-ui](https://github.com/lvim-tech/lvim-ui) and [lvim-fuzzy](https://github.com/lvim-tech/lvim-fuzzy)
 (the shared matching engine — lvim-fuzzy-core, the same as the terminal finder; its native library is
-required). The fzf-TUI backend needs the `fzf` binary (and `mkfifo`);
-without it the finders fall back to the Lua tint list. Optional:
+required). `fd` (or `rg` / `find`) lists files, `rg` greps. Optional:
 [lvim-hud](https://github.com/lvim-tech/lvim-hud) (statusline title overlay) and
 [lvim-msgarea](https://github.com/lvim-tech/lvim-msgarea) (the `area` dock in the message zone).
 
@@ -64,7 +67,7 @@ pick.colorschemes()
 
 Press **`<Esc>`** (off the query, onto the list) and then **`g?`** — or click the **`help` chip** on the
 footer bar — for the keymap CHEATSHEET: every finder key, built from the live `keys` config below (rebind
-one and the cheatsheet follows). It works in BOTH backends (the tint list and the fzf TUI). `q` / `<Esc>` /
+one and the cheatsheet follows); the fixed keys of the list are listed with them. `q` / `<Esc>` /
 `g?` close it. The key is normal-mode only on purpose: while you type, the query owns the keyboard.
 
 ## The query
@@ -85,8 +88,7 @@ different thing — there the query is handed to ripgrep, which has its own synt
 
 ## Grep
 
-The Lua **tint grep** (`fzf_tui = false`, and every plugin using it) holds **all** ripgrep matches in the
-native matcher — like fzf keeps them in its own process — so there is **no browse cap** and the counter
+The grep holds **all** ripgrep matches in the native matcher — like fzf keeps them in its own process — so there is **no browse cap** and the counter
 climbs to the **real total** as rg streams (e.g. `403127/403127`, never an under-reported `10000`). It has
 two modes, toggled with `<C-g>` (config `keys.grep_filter`) exactly like fzf's `Regex ⇄ fuzzy` switch:
 
@@ -112,15 +114,13 @@ with `<C-s>` (config `keys.grep_scope`; default `grep_scope = "line"`) and shown
 Memory stays bounded and the main thread ~0%-blocked at any scale: `grep_max` is the native STORE ceiling (a
 broader query is still fully *counted*, its overflow bytes discarded — never buffered, no `E41: out of
 memory`), and `grep_max_columns` caps each result line so a minified / cache / log file's megabyte-long line
-can't blow the blob up. `<CR>` opens the focused match at its exact `line:col`. (The fzf-TUI grep backend,
-`fzf_tui = true`, is unchanged — fzf owns its own result set and its native `<ctrl-g>` toggle.)
+can't blow the blob up. `<CR>` opens the focused match at its exact `line:col`.
 
 ## Dock stack
 
 When **lvim-utils** provides the shared dock-stack manager, every opened finder KIND is an entry in the
 dock stack — `files`, `grep`, `buffers` … each with the base identity `lvim-picker:<kind>`, so `:LvimPicker files`
-and `:LvimPicker grep` are two distinct instances. This applies to **both** finder backends: the fzf-TUI finders
-(the default `fzf_tui = true`) and the Lua tint list — the two dock through one layer. Only one is visible per
+and `:LvimPicker grep` are two distinct instances. Only one is visible per
 layout at a time: opening a second finder there PARKS the first (its finder spec is remembered — it stays
 restorable on the stack), and re-opening a live kind rebuilds it fresh in place (no duplicate).
 
@@ -232,7 +232,7 @@ engine's config); it is optional (the defaults below work as-is). The full defau
 require("lvim-picker").setup({
     -- Default layout for every finder: "area" (message zone) | "float" (centred) | "bottom" (dock).
     layout = "area",
-    -- The tint-list finder's max visible rows (a secondary cap under the dock geometry height).
+    -- The finder's max visible rows (a secondary cap under the dock geometry height).
     -- nil = follow the ONE central authority (lvim-utils `dock.geometry.<layout>.height`), like every other
     -- panel; set a number only to cap THIS plugin's lists shorter than the dock allows.
     max_rows = nil,
@@ -250,36 +250,35 @@ require("lvim-picker").setup({
         -- per-call opts.force overrides this (see below).
         force = { float = {}, area = {}, bottom = {} },
     },
-    -- Real fzf TUI for the heavy command-driven finders (false = the Lua tint list). Needs fzf + mkfifo.
-    fzf_tui = true,
-    -- (tint list) debounce of the query match, in ms (0 = a fresh non-blocking match on every keystroke).
+    -- debounce of the query match, in ms (0 = a fresh non-blocking match on every keystroke).
     debounce_ms = 0,
     -- (streamed finders) how often, in ms, the growing pool re-renders (live counter + rows) while streaming.
     stream_refresh_ms = 50,
     -- (streamed finders) main-thread time budget, in ms, of one paced stream-ingest slice; the queued listing
     -- drains in slices of this size with a yield to the event loop in between, so a huge tree loads smoothly.
     stream_slice_ms = 4,
-    -- (tint list) how many candidates to marshal into the native matcher per background slice.
+    -- how many candidates to marshal into the native matcher per background slice.
     marshal_cap = 32768,
-    -- (tint grep — live AND fixed-query) the NATIVE-BLOB STORE CEILING: the tint grep holds EVERY rg match in
+    -- (grep — live AND fixed-query) the NATIVE-BLOB STORE CEILING: the grep holds EVERY rg match in
     -- the native matcher (Variant B — like fzf keeps them in its own process), so there is NO browse cap and the
     -- counter climbs to the REAL total. Up to this many matches are STORED + browsable; a broader query is still
     -- fully COUNTED (the count keeps climbing) but the overflow bytes are DISCARDED in the read callback — never
     -- buffered → no OOM, ~0% main-thread block. A HIGH pathological-query safety ceiling, not a normal limit.
     grep_max = 500000,
-    -- (tint grep) cap on each ripgrep result line's length (rg's `--max-columns` + `--max-columns-preview`, so
+    -- (grep) cap on each ripgrep result line's length (rg's `--max-columns` + `--max-columns-preview`, so
     -- an over-long line is truncated, not omitted). A broad search hits minified / cache / log files whose one
     -- line is MEGABYTES; without this even a few hundred k matches buffer gigabytes into the blob. 0 disables.
     grep_max_columns = 512,
-    -- (tint in-memory previews: buffers / lsp / diagnostics / help / keymaps / editable) the preview follows the
+    -- (in-memory previews: buffers / lsp / diagnostics / help / keymaps / editable) the preview follows the
     -- cursor at once; > 0 caps it to one update per this many ms while scrolling. The file and directory previews
     -- (files / grep / git_files / oldfiles / directories) are read ASYNC and follow every move regardless.
     preview_debounce_ms = 0,
-    -- (tint FILE previews) recently previewed files kept in the async LRU cache (instant re-visits).
+    -- (file previews) recently previewed files kept in the async LRU cache (instant re-visits).
     preview_cache = 32,
-    -- (tint FILE previews) hard cap on lines materialised per preview (bounds a deep match in a huge file).
+    -- (file previews) hard cap on lines materialised per preview (bounds a deep match in a huge file).
     preview_max_lines = 2000,
-    -- All finder keys (a value is a single key or a list; "" / {} disables it).
+    -- The keys you can rebind (a value is a single key or a list; "" / {} disables it). Fixed: <CR> open,
+    -- j/k (list) or C-j/C-k (prompt) move, C-d/C-u preview, / or C-f back to typing, q/<Esc> close.
     -- Extra row actions: `{ key, name?, mode?, run(item, close) }`. `name` adds a footer hint. `mode`
     -- restricts the binding to ONE context — "n" = the LIST only, "i" = the PROMPT only, absent = both.
     -- A key that also EDITS the query (<BS>, a bare letter) must be declared `mode = "n"`, or it would be
@@ -288,27 +287,20 @@ require("lvim-picker").setup({
         -- (NORMAL mode only — while you type, the query owns the keyboard) the keymap CHEATSHEET, built
         -- from this table; also a `help` chip on the finder's footer bar in normal mode.
         help = "g?",
-        accept = "<CR>", -- open / confirm the focused item
         mark = "<Tab>", -- toggle the focused row's mark (multi-select)
         quickfix = "<C-q>", -- send marked (or focused) rows to the quickfix list, then close
-        grep_filter = "<C-g>", -- (live tint grep) toggle GREP ⇄ FILTER mode: drive rg vs fuzzy-filter the loaded set
-        grep_scope = "<C-s>", -- (tint grep, FILTER mode) cycle the filter scope: line → path → file
-        swap_backend = { "<C-]>" }, -- swap the backend of the current finder (tint list ⇄ fzf TUI)
-        preview_down = "<C-d>", -- scroll the preview down
-        preview_up = "<C-u>", -- scroll the preview up
-        park = "<C-o>", -- focus the editor without closing the finder; the same key returns
-        abort = { "<Esc>", "<C-c>" }, -- cancel
-        nav = { "<C-j>", "<C-k>", "<C-n>", "<C-p>" }, -- passed to fzf's up/down navigation
-        -- how the focused item opens: a NORMAL key (n) and an INSERT key (i) per method.
+        grep_filter = "<C-g>", -- (live grep) toggle GREP ⇄ FILTER mode: drive rg vs fuzzy-filter the loaded set
+        grep_scope = "<C-s>", -- (grep, FILTER mode) cycle the filter scope: line → path → file
+        -- open in a split of the window the finder came from: a NORMAL key (n, the list) and an INSERT key
+        -- (i, while typing) per method.
         open_methods = {
-            edit = { n = "<CR>", i = "<C-CR>" }, -- the window the picker opened from
             vsplit = { n = "v", i = "<C-v>" }, -- a vertical split
             hsplit = { n = "x", i = "<C-x>" }, -- a horizontal split
         },
     },
     -- Mark indicator drawn before a marked row (multi-select).
     marker = "➤",
-    -- Show file/directory icons in the finder lists (both backends); false = plain text rows.
+    -- Show file/directory icons in the finder lists; false = plain text rows.
     show_icons = true,
     -- Which icon plugin supplies file glyphs: "auto" (lvim-icons → nvim-web-devicons → mini.icons) or one of
     -- "lvim" | "devicons" | "mini".
@@ -332,9 +324,7 @@ require("lvim-picker").setup({
             { "sectors" },
         },
     },
-    -- fzf grep result layout: 1 = 2-row, 2 = 2-row + gap, false/0 = single-row path:lnum:col:text.
     grep_scope = "line", -- what a grep FILTER reads: "line" (the text) | "path" | "file" (the whole file)
-    grep_multiline = 1,
     -- Finder-title alignment: "left" | "center" | "right" — the same in every layout (float/area/bottom).
     -- The title text itself stays dynamic per finder; a per-call `opts.title_pos` overrides this.
     title_pos = "center",
@@ -405,7 +395,7 @@ require("lvim-picker").setup({
     fuzzy = {
         sort = "score", -- ordering: "score" | a list of sort keys | a function
         max_results = 1000, -- cap on ranked results (lvim-fuzzy's own max_results also applies)
-        -- FILENAME BIAS (tint backend). Fuzzy matching runs against the WHOLE path, so
+        -- FILENAME BIAS. Fuzzy matching runs against the WHOLE path, so
         -- `vgit.lua` also matches every `.lua` file under a `…-git/` dir (`git` from the dir, `.lua` from the
         -- extension). This biases toward the file NAME:
         --   "boost"  — (default) rows whose NAME matches rank above path-only matches (which still show below);
