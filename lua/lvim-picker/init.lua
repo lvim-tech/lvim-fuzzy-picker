@@ -589,7 +589,7 @@ end
 ---@field preview? fun(item: any): string[], string?, integer?  preview lines (+ a filetype, + a 1-based focus line) per selection (SYNCHRONOUS, in-memory finders)
 ---@field preview_file_of? fun(item: any): { path: string, lnum?: integer, col?: integer, ft?: string }?  map an item to a FILE location previewed ASYNC (read off the main thread, LRU-cached) so the preview follows the cursor while scrolling; used by files/grep
 ---@field preview_file? boolean  preview the item's REAL file buffer (EDITABLE, 2-way synced) instead of `preview` lines; items need `path` (+ lnum/col)
----@field preview_side? "right"|"left"|"dynamic"|"hide"  where the preview sits (default "right"); `dynamic` = full-width list + a peek float above it (native-qf style); `hide` = no preview (toggle with <C-e>)
+---@field preview_side? "right"|"left"|"dynamic"|"hide"  where the preview sits (default `config.preview_side`); `dynamic` = full-width list + a peek float above it (native-qf style); `hide` = no preview (toggle with <C-e>)
 ---@field preview_numbers? boolean  show line numbers in the preview (default true)
 ---@field preview_wrap? boolean  soft-wrap the preview (default false)
 ---@field list_wrap? boolean  soft-wrap the list rows (no "↳" marker) so far-right matches stay visible (default false)
@@ -724,6 +724,15 @@ build = function(opts, kind)
     -- Forward declarations — the list panel's NORMAL-mode keys (defined with the panel, early) call these,
     -- but they are assigned further down (after the providers/state are wired).
     local move, confirm, cancel, focus_input, act, scroll_preview
+    --- Re-render the preview. The panel is the one the picker captured when it was first drawn, else the
+    --- surface's own: a finder that OPENS in `dynamic` never draws its docked preview (it is parked from the
+    --- start), so nothing was captured and the peek float above the dock never followed the list.
+    local function preview_refresh()
+        local pp = state.preview_pan or (state.st and state.st.preview_panel)
+        if pp and pp.refresh then
+            pp.refresh()
+        end
+    end
     local build_footer -- mode-aware footer legend (prompt ⇄ list), assigned near focus_input; used at open + on switch
     -- The GREP controller (assigned after `refilter`, referenced by it + the keymaps): (re)start rg for a query,
     -- stop the in-flight rg, and the Ctrl-g grep⇄filter toggle. Nil for non-grep finders.
@@ -1526,9 +1535,7 @@ build = function(opts, kind)
         state.preview_col = want.col
         state.preview_loc = { path = want.path, lnum = want.lnum, col = want.col }
         refit() -- the preview height is capped at max_rows, so this relayouts only on the FIRST load, then holds
-        if state.preview_pan and state.preview_pan.refresh then
-            state.preview_pan.refresh()
-        end
+        preview_refresh()
         set_list_winbar()
     end
     --- Drain the pending preview request: a cache hit applies instantly; a miss starts ONE async read (marking
@@ -1577,9 +1584,7 @@ build = function(opts, kind)
             end
             state.preview_loc, state.preview_col = nil, nil
             refit()
-            if state.preview_pan and state.preview_pan.refresh then
-                state.preview_pan.refresh()
-            end
+            preview_refresh()
             return
         end
         -- Read up to `lnum + context` lines (so the match is on-screen), hard-capped at `preview_max_lines` so a
@@ -1608,8 +1613,8 @@ build = function(opts, kind)
         if not light then
             if opts.preview_file_of then
                 request_preview() -- async: fills state.preview_lines + refreshes the panel on completion
-            elseif state.preview_pan and state.preview_pan.refresh then
-                state.preview_pan.refresh()
+            else
+                preview_refresh()
             end
         end
         set_list_winbar() -- the result count in the winbar follows the list
@@ -1626,9 +1631,7 @@ build = function(opts, kind)
         preview_last = vim.uv.hrtime() / 1e6
         fetch_preview()
         refit()
-        if state.preview_pan and state.preview_pan.refresh then
-            state.preview_pan.refresh()
-        end
+        preview_refresh()
         set_list_winbar()
     end
     local function schedule_preview()
@@ -2015,6 +2018,11 @@ build = function(opts, kind)
         end
     end
     scroll_preview = function(dir)
+        -- The surface knows which window holds the preview right now — the docked panel, or the `dynamic`
+        -- peek FLOAT above the dock (where the docked panel is parked, so scrolling it did nothing).
+        if state.st and state.st.scroll_preview then
+            return state.st.scroll_preview(dir)
+        end
         local p = state.preview_pan
         if p and p.win and api.nvim_win_is_valid(p.win) then
             api.nvim_win_call(p.win, function()
@@ -2249,7 +2257,10 @@ build = function(opts, kind)
     -- preview side: where the preview panel sits relative to the list — `right` / `left` (side by side) or
     -- `dynamic` (a peek FLOAT above a full-width list). Vertical DOCKED stacking is gone: the two panels then
     -- split the dock's rows and neither is readable.
-    local side = opts.preview_side or "right"
+    local side = opts.preview_side or (config or {}).preview_side or "right"
+    if side == "dynamic" and not (bottom or area) then
+        side = "right" -- a centred float has no room above it for the peek; it keeps the preview beside the list
+    end
     -- BOTH data panels — the LIST and the PREVIEW — carry the single-source content ring (`surface.CONTENT_BORDER`,
     -- resolved live to `ui_config.content_border` at open time), so they read as two matching nested frames. The
     -- scoped INPUT prompt overlays the list's first (winbar) row but the surface places scoped bands INSIDE the

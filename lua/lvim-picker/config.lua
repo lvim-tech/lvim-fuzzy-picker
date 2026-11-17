@@ -21,6 +21,7 @@
 ---@field show_icons      boolean  Show file/directory icons in the finder lists
 ---@field footer_separator string  The glyph dividing footer button groups
 ---@field footer          table    The footer button list per mode (`insert` / `normal`): groups of action ids
+---@field preview_side    "right"|"left"|"dynamic"|"hide"  Where every finder's preview sits unless the finder sets its own
 ---@field title_pos       "left"|"center"|"right"  Finder-title alignment — every layout the same (default "center")
 ---@field statusline      boolean  Publish the finder title + counter + query to the bottom statusline
 ---@field stream_slice_ms integer  Main-thread time budget (ms) of one paced stream-ingest slice (see spawn_stream)
@@ -204,6 +205,12 @@ return {
     -- "line" (default) the line's text — every row left holds the query on its own line, so the preview's focused
     -- line shows it; "path" the file path; "file" the whole file (exact smart-case terms). `keys.grep_scope` cycles.
     grep_scope = "line",
+
+    -- Where every finder's PREVIEW sits, unless the finder (or its caller) passes its own `preview_side`:
+    -- "right" / "left" beside the list, "dynamic" a float above a docked list (full-width list, the file gets
+    -- the screen above the dock; a centred float finder has no such room and keeps "right"), "hide" none.
+    -- `<C-n>` / `<C-p>` move it and `<C-e>` hides it for the open finder.
+    preview_side = "right",
 
     -- The finder TITLE's alignment ("left" | "center" | "right") — layout-independent (float / area / bottom
     -- all the same), applied to the title row band and the native border-title alike. The title TEXT itself
