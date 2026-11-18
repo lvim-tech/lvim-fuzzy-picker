@@ -1077,17 +1077,24 @@ build = function(opts, kind)
             local dir = vim.fn.fnamemodify(rel, ":h")
             dir = (dir == "." or dir == "") and "" or (dir .. "/")
             -- the file's icon (from the configured icon_provider, when `preview.show_icon`)
+            local file_hl = hl("preview_file", "LvimUiPeekFile")
             local icon = ""
             if prevcfg.show_icon ~= false then
-                local gl =
-                    iconlib.get(tail, { provider = config.icon_provider, color_mode = config.icon_color_mode }).glyph
-                icon = (gl and gl ~= "") and (gl .. " ") or ""
+                local r = iconlib.get(tail, { provider = config.icon_provider, color_mode = config.icon_color_mode })
+                local gl = r.glyph
+                if gl and gl ~= "" then
+                    -- an lvim-icons IMAGE keeps its own group (its fg is the image id) on the file name's bg;
+                    -- a font glyph takes the file name's colour, as before
+                    local img_hl = iconlib.on_bg(r, file_hl)
+                    icon = img_hl and ("%#" .. img_hl .. "#" .. esc(gl) .. "%#" .. file_hl .. "# ")
+                        or (esc(gl) .. " ")
+                end
             end
             -- name = icon + file (bright); dir = padded path on the winbar bg (so it blends into the bar)
             local dpl, dpr = prevcfg.dir_pad_left or 1, prevcfg.dir_pad_right or 1
             vim.wo[pan.win].winbar = ("%%#%s# %s%s %%#%s#%s%s%s%%#%s#%%="):format(
-                hl("preview_file", "LvimUiPeekFile"),
-                esc(icon),
+                file_hl,
+                icon,
                 esc(tail),
                 hl("preview_dir", "LvimUiPickerPreviewDir"),
                 string.rep(" ", dpl),
