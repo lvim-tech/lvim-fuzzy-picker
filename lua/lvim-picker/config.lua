@@ -180,7 +180,7 @@ return {
     -- The glyph that DIVIDES footer button GROUPS (open-methods · list-actions · frame-nav). Its colour is the
     -- `LvimUiFooterSep` highlight; the glyph itself is configurable here (a footer DIVIDER dot — distinct from
     -- the `󰅂` active-marker canon).
-    footer_separator = "●",
+    footer_separator = "\u{f09de}",
 
     -- The FOOTER button list, DECLARED PER MODE (`insert` while typing the query · `normal` after <Esc> on the
     -- list) — each is GROUPS of action IDs (a `●` divides the groups). An id resolves to its {key, name} for THAT

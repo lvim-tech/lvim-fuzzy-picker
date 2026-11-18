@@ -2201,7 +2201,7 @@ build = function(opts, kind)
         -- help LAST, in its own group: a `●` separator, then the cheatsheet key. LIST context only — in the prompt
         -- the key would type into the query.
         if ctx == "list" then
-            local sep = (config or {}).footer_separator or "●"
+            local sep = (config or {}).footer_separator or "\u{f09de}"
             hints[#hints + 1] =
                 { type = "separator", text = sep, style = { padding = { 1, 1 }, hl = "LvimUiFooterSep" } }
             hints[#hints + 1] = { key = klabel(kcfg.help), name = "help" }
