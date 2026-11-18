@@ -1200,24 +1200,29 @@ build = function(opts, kind)
                 -- Auto ft devicon for items that name a file (file lists / lsp locations / quickfix / …),
                 -- resolved HERE — for the visible rows only — because the lookup is uncached ~3 µs/call and
                 -- `normalize` runs over the whole candidate set (~2M rows on a huge tree). Memoised per grid
-                -- item (`_icon_done`); grid items are fresh tables per filter delivery, so a re-resolve is at
+                -- item (`_icon_gen`); grid items are fresh tables per filter delivery, so a re-resolve is at
                 -- most one viewport per keystroke. An EXPLICIT item icon (e.g. a diagnostic severity glyph)
                 -- arrives non-nil from normalize and is left untouched.
-                if it.icon == nil and not it._icon_done then
-                    it._icon_done = true
+                -- Per mode too (`_icon_gen`): a live lvim-icons mode switch resolves the auto icon again.
+                if (it.icon == nil or it._icon_auto) and it._icon_gen ~= iconlib.generation() then
+                    it._icon_gen = iconlib.generation()
                     local s = it._src
                     if type(s) == "table" then
                         local p = s.path
                             or (s.bufnr and api.nvim_buf_is_valid(s.bufnr) and api.nvim_buf_get_name(s.bufnr))
                         if p and p ~= "" then
                             it.icon, it.icon_hl = source.devicon(p)
+                            it._icon_auto = it.icon ~= nil
                         end
                     end
                 end
                 -- An explicit glyph icon (a diagnostic severity, a symbol kind …) becomes its lvim-icons IMAGE where
-                -- UI icons are images ("material"), in the item's icon colour — once per item.
-                if it.icon and it.icon ~= "" and not it._uicon_done then
-                    it._uicon_done = true
+                -- UI icons are images ("material"), in the item's icon colour — once per item and per mode: the
+                -- original glyph is kept, so a live mode switch converts it again from the glyph.
+                if not it._icon_auto and it.icon and it.icon ~= "" and it._uicon_gen ~= iconlib.generation() then
+                    it._uicon_gen = iconlib.generation()
+                    it._uicon_src = it._uicon_src or { it.icon, it.icon_hl }
+                    it.icon, it.icon_hl = it._uicon_src[1], it._uicon_src[2]
                     local t, h, img = iconlib.ui_text(it.icon, it.icon_hl)
                     if img then
                         it.icon = t
