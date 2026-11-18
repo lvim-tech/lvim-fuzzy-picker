@@ -601,7 +601,7 @@ end
 ---@field title_line? string  title placement: "row" (a top content row, default) | "statusline" (the centralized chrome overlay) | "border" (opt-in native border-title)
 ---@field title_pos? "left"|"center"|"right"  title alignment override for THIS open (default: `config.title_pos`, layout-independent)
 ---@field counter? string  match-count placement: "footer" (default — the bottom-right border) | "title" (folded into the border-title)
----@field prompt? string  the query prompt prefix (default "➤ ")
+---@field prompt? string  the query prompt prefix (default "󰅂 ")
 ---@field keys? { key: string, name?: string, mode?: "n"|"i", run: fun(item: any, close: fun()) }[]  extra row actions (split, code action…); `name` adds a footer hint; `mode` restricts the binding to the LIST (n) or the PROMPT (i) — absent = both
 ---@field filters? LvimUiFilterGroup[]  header filter button GROUPS — each `{ active = id, buttons = { { id, label, key?, predicate?(src), hl?, hl_active?, hl_hover_active? }, … } }`; activate a filter by its key in NORMAL mode
 ---@field refresh? fun(): any[]  re-fetch the static items live (e.g. on DiagnosticChanged) — see refresh_events
@@ -767,7 +767,7 @@ build = function(opts, kind)
     -- ── multi-select marking + quickfix (config.keys.mark / .quickfix) ──
     local pkc = (config or {})
     local kcfg = pkc.keys or {}
-    local marker = pkc.marker or "➤"
+    local marker = pkc.marker or "󰅂"
     --- A config key value (a single key, a list, or "") → a list of keys.
     ---@param v string|string[]|nil
     ---@return string[]
@@ -1212,6 +1212,16 @@ build = function(opts, kind)
                         if p and p ~= "" then
                             it.icon, it.icon_hl = source.devicon(p)
                         end
+                    end
+                end
+                -- An explicit glyph icon (a diagnostic severity, a symbol kind …) becomes its lvim-icons IMAGE where
+                -- UI icons are images ("material"), in the item's icon colour — once per item.
+                if it.icon and it.icon ~= "" and not it._uicon_done then
+                    it._uicon_done = true
+                    local t, h, img = iconlib.ui_text(it.icon, it.icon_hl)
+                    if img then
+                        it.icon = t
+                        it.icon_hl = it.icon_hl and iconlib.on_bg({ image = true, hl = h }, it.icon_hl) or h
                     end
                 end
                 local row, spans, lead = list_row(it, marked, marker)
@@ -2314,7 +2324,7 @@ build = function(opts, kind)
         badge = badge .. sp(" ", pcfg.pad_right or 1)
         return { { badge, prompt_hl }, { sp(" ", pcfg.input_gap or 1), input_hl } }
     end
-    -- (grep, live only) the Ctrl-g MODE indicator: the TITLE gains "➤ filter" AND the SEARCH BAR badge swaps to
+    -- (grep, live only) the Ctrl-g MODE indicator: the TITLE gains "󰅂 filter" AND the SEARCH BAR badge swaps to
     -- the filter badge while rg is frozen (the query fuzzy-filters the loaded results). Applied live via
     -- `set_title` + `set_prompt` (an IN-PLACE repaint — the query text, cursor and on_change are untouched).
     if opts.grep then
@@ -2322,9 +2332,9 @@ build = function(opts, kind)
             if not (state.st and state.st.set_title) then
                 return
             end
-            -- FILTER mode names what the filter reads (the scope): "Grep ➤ Filter · line"
+            -- FILTER mode names what the filter reads (the scope): "Grep 󰅂 Filter · line"
             local sc = state.grep_scope or (config or {}).grep_scope or "line"
-            local suffix = (state.grep_mode == "filter") and (" ➤ Filter · " .. sc) or ""
+            local suffix = (state.grep_mode == "filter") and (" 󰅂 Filter · " .. sc) or ""
             state.st.set_title({
                 icon = opts.icon,
                 text = (opts.title or "Grep") .. suffix,

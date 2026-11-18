@@ -97,14 +97,14 @@ two modes, toggled with `<C-g>` (config `keys.grep_filter`) exactly like fzf's `
   search and nothing filters on top). The title reads `Grep`.
 - **Filter mode** (`<C-g>`) — ripgrep is **frozen** at the current result set and the typed query now
   **fuzzy-filters** the loaded matches (no re-grep). The counter becomes `matched/loaded` and the matched
-  number **shrinks** as you narrow. The title reads `Grep ➤ filter`.
+  number **shrinks** as you narrow. The title reads `Grep 󰅂 filter`.
 
 The fixed-query greps (`grep_cword` / `grep_cWORD` / `grep_visual` / `grep_word` / `grep_curbuf`) grep **once**
 for their word and open straight in filter mode, so you fuzzy-narrow their matches as you type.
 
 **Filter scope.** In filter mode the typed query reads one part of each `path:line:col:text` result, cycled
 with `<C-s>` (config `keys.grep_scope`; default `grep_scope = "line"`) and shown in the title
-(`Grep ➤ Filter · line`) and as a footer chip:
+(`Grep 󰅂 Filter · line`) and as a footer chip:
 
 - **line** — the line's text only: every row left holds the query on its own line, so the preview's focused
   line shows it;
@@ -299,7 +299,7 @@ require("lvim-picker").setup({
         },
     },
     -- Mark indicator drawn before a marked row (multi-select).
-    marker = "➤",
+    marker = "󰅂",
     -- Show file/directory icons in the finder lists; false = plain text rows.
     show_icons = true,
     -- Which icon plugin supplies file glyphs: "auto" (lvim-icons → nvim-web-devicons → mini.icons) or one of
@@ -344,7 +344,7 @@ require("lvim-picker").setup({
     },
     -- Prompt badge before the query (either of icon/label may be "").
     prompt = {
-        icon = "➤",
+        icon = "󰅂",
         label = "",
         -- (live grep) the badge while <C-g> FILTER mode is on (rg frozen, the query fuzzy-filters the results)
         filter_icon = "󰈲",

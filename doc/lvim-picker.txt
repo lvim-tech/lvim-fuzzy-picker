@@ -175,7 +175,7 @@ fuzzy switch:
   • FILTER mode (`<C-g>`) — ripgrep is FROZEN at the current result set and the
     typed query now FUZZY-FILTERS the loaded matches (no re-grep). The counter
     becomes `matched/loaded`, the matched number SHRINKING as you narrow. The title
-    reads "Grep ➤ filter".
+    reads "Grep 󰅂 filter".
 
 The fixed-query greps (grep_cword / grep_cWORD / grep_visual / grep_word /
 grep_curbuf) grep ONCE for their word and open straight in FILTER mode, so you
@@ -185,7 +185,7 @@ buffer's file.
                                                           *lvim-picker-grep-scope*
 FILTER SCOPE. In FILTER mode the typed query reads ONE part of each
 `path:line:col:text` result, cycled with `<C-s>` (config `keys.grep_scope`;
-default `grep_scope = "line"`) and shown in the title ("Grep ➤ Filter · line")
+default `grep_scope = "line"`) and shown in the title ("Grep 󰅂 Filter · line")
 and as a footer chip:
   • line — the line's text only: every row left holds the query on its own line;
   • path — the file path only;

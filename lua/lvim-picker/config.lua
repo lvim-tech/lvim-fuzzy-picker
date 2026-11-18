@@ -163,8 +163,8 @@ return {
         },
     },
 
-    -- The MARK indicator drawn in the one blank column in front of a marked row (multi-select), in red. The canonical pointer glyph `➤` (U+27A4) reads cleanly in that single space.
-    marker = "➤",
+    -- The MARK indicator drawn in the one blank column in front of a marked row (multi-select), in red. The canonical pointer glyph `󰅂` (U+F0142 nf-md-chevron_right) reads cleanly in that single space.
+    marker = "󰅂",
     -- Show file/directory icons in the finder lists; false = plain text rows.
     show_icons = true,
     -- Which icon plugin supplies file glyphs, resolved through lvim-utils.icons:
@@ -179,7 +179,7 @@ return {
 
     -- The glyph that DIVIDES footer button GROUPS (open-methods · list-actions · frame-nav). Its colour is the
     -- `LvimUiFooterSep` highlight; the glyph itself is configurable here (a footer DIVIDER dot — distinct from
-    -- the `➤` active-marker canon).
+    -- the `󰅂` active-marker canon).
     footer_separator = "●",
 
     -- The FOOTER button list, DECLARED PER MODE (`insert` while typing the query · `normal` after <Esc> on the
@@ -246,7 +246,7 @@ return {
     -- The PROMPT badge shown before the typed query: an icon and/or label (either may be "" — icon only /
     -- text only / icon + text). A per-call `opts.prompt` string overrides it.
     prompt = {
-        icon = "➤", -- the leading glyph (the canon pointer; set your own nf glyph via setup, or "" for none)
+        icon = "󰅂", -- the leading glyph (the canon pointer; set your own nf glyph via setup, or "" for none)
         label = "", -- optional text after the icon (e.g. "Search"); "" for none
         -- (live grep only) the badge shown while <C-g> FILTER mode is active (rg frozen, the query fuzzy-filters
         -- the loaded results) — so the search bar itself signals the mode, not just the title. Same spacing.
