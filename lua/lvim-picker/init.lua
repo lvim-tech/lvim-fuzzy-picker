@@ -181,10 +181,12 @@ M._row_uses_rg_pattern = row_uses_rg_pattern
 ---@param lead integer  byte offset where the row's label starts (past the mark column)
 ---@param width integer  the list window's width in cells
 ---@param ellipsis string
----@return string, { c0: integer, c1: integer }[]
-local function clip_row(row, spans, lead, width, ellipsis)
+---@param fixed? integer  bytes of the label that are its locator (never scrolled); default: a `path:lnum:` prefix
+---@param extra? { c0: integer, c1: integer }[]  more spans (e.g. column colours) moved the same way, not steering
+---@return string, { c0: integer, c1: integer }[], { c0: integer, c1: integer }[]?
+local function clip_row(row, spans, lead, width, ellipsis, fixed, extra)
     if width <= 0 or #spans == 0 or vim.fn.strdisplaywidth(row) <= width then
-        return row, spans
+        return row, spans, extra
     end
     -- The furthest match decides: if it already fits, nothing is gained by scrolling.
     local last = spans[1]
@@ -194,18 +196,22 @@ local function clip_row(row, spans, lead, width, ellipsis)
         end
     end
     if vim.fn.strdisplaywidth(row:sub(1, last.c1)) <= width then
-        return row, spans
+        return row, spans, extra
     end
-    -- Everything up to and including `path:lnum:col:` stays put.
-    local locator = row:sub(lead + 1):match("^[^:]*:%d+:%d+:") or row:sub(lead + 1):match("^[^:]*:%d+:")
-    local keep = lead + (locator and #locator or 0)
+    -- Everything up to and including `path:lnum:col:` (or the item's own locator) stays put.
+    local locator_len = fixed
+    if not locator_len then
+        local locator = row:sub(lead + 1):match("^[^:]*:%d+:%d+:") or row:sub(lead + 1):match("^[^:]*:%d+:")
+        locator_len = locator and #locator or 0
+    end
+    local keep = lead + locator_len
     if last.c0 <= keep then
-        return row, spans
+        return row, spans, extra
     end
     -- Put the match a third of the way into the room that is left, so its context comes with it.
     local room = width - vim.fn.strdisplaywidth(row:sub(1, keep)) - vim.fn.strdisplaywidth(ellipsis)
     if room <= 8 then
-        return row, spans
+        return row, spans, extra
     end
     local target = math.max(0, math.floor(room / 3))
     local cut = keep
@@ -217,19 +223,24 @@ local function clip_row(row, spans, lead, width, ellipsis)
         end
     end
     if cut <= keep then
-        return row, spans
+        return row, spans, extra
     end
     local out = row:sub(1, keep) .. ellipsis .. row:sub(cut + 1)
     local shift = #ellipsis - (cut - keep)
-    local moved = {}
-    for _, sp in ipairs(spans) do
-        if sp.c0 >= cut then
-            moved[#moved + 1] = { c0 = sp.c0 + shift, c1 = sp.c1 + shift }
-        elseif sp.c1 <= keep then
-            moved[#moved + 1] = sp
+    local function move(list)
+        local moved = {}
+        for _, sp in ipairs(list) do
+            if sp.c0 >= cut then
+                moved[#moved + 1] = vim.tbl_extend("force", sp, { c0 = sp.c0 + shift, c1 = sp.c1 + shift })
+            elseif sp.c1 <= keep then
+                moved[#moved + 1] = sp
+            elseif sp.c1 > cut then -- straddles the cut: keep its visible tail
+                moved[#moved + 1] = vim.tbl_extend("force", sp, { c0 = keep + #ellipsis, c1 = sp.c1 + shift })
+            end
         end
+        return moved
     end
-    return out, moved
+    return out, move(spans), extra and move(extra) or nil
 end
 
 --- Build a list ROW for a grid item: `<lead> icon text`, plus the BYTE spans of its matched label characters
@@ -574,6 +585,9 @@ end
 
 ---@class LvimPickerOpts
 ---@field items? any[]  STATIC candidates (strings, or tables — see `format`), fuzzy-filtered as you type
+--- A table item may also carry `icon` / `icon_hl`, `hl_spans` (`{ c0, c1, hl }` byte ranges of its display text
+--- to colour, e.g. aligned columns), `match_bytes` (`{ c0, c1 }` ranges marked as the match while no query is
+--- typed) and `locator_bytes` (how many leading bytes of its text a long row never scrolls away).
 ---@field source? fun(query: string, cb: fun(items: any[]))  a LIVE source: each query produces the results (e.g. ripgrep); use instead of `items`
 ---@field source_raw? boolean  the `source` cb already delivers GRID items (`{ text, _src, … }`), so skip normalising them — for a progressive source that appends into one growing list (live grep)
 ---@field count_files? boolean  count the tree's files in the background (via the files list command) and use it as the counter's TOTAL — grep shows `matches found / total files`
@@ -588,6 +602,7 @@ end
 ---@field format? fun(item: any): string  display text for a table item (default: `item.text`)
 ---@field preview? fun(item: any): string[], string?, integer?  preview lines (+ a filetype, + a 1-based focus line) per selection (SYNCHRONOUS, in-memory finders)
 ---@field preview_file_of? fun(item: any): { path: string, lnum?: integer, col?: integer, ft?: string }?  map an item to a FILE location previewed ASYNC (read off the main thread, LRU-cached) so the preview follows the cursor while scrolling; used by files/grep
+---@field match_pattern? string  the search pattern whose matches are marked in the rows' preview (and kept on `<C-q>`), as ripgrep ran it — see `regex`
 ---@field preview_file? boolean  preview the item's REAL file buffer (EDITABLE, 2-way synced) instead of `preview` lines; items need `path` (+ lnum/col)
 ---@field preview_side? "right"|"left"|"dynamic"|"hide"  where the preview sits (default `config.preview_side`); `dynamic` = full-width list + a peek float above it (native-qf style); `hide` = no preview (toggle with <C-e>)
 ---@field preview_numbers? boolean  show line numbers in the preview (default true)
@@ -749,6 +764,9 @@ build = function(opts, kind)
     --- finder marks the typed query.
     ---@return string?
     local function match_pattern()
+        if opts.match_pattern and opts.match_pattern ~= "" then
+            return opts.match_pattern -- the caller's own (e.g. the grep a quickfix list came from)
+        end
         if opts.grep then
             local gq = state.grep_query -- the blob controller: the live / frozen / fixed rg query
             if gq and gq ~= "" then
@@ -810,8 +828,25 @@ build = function(opts, kind)
             srcs = (cur and cur._src ~= nil) and { cur._src } or {}
         end
         local qf = {}
+        local pattern = (opts.grep or opts.match_pattern) and match_pattern() or nil
         for _, src in ipairs(srcs) do
             if type(src) == "table" then
+                local text = src.qf_text or src.text or ""
+                local end_col = src.end_col
+                if pattern and not end_col and src.path and src.lnum and src.col then
+                    -- the streamed (ABI < 5) grep row carries its display text `path:lnum  line`: keep the line
+                    local shown = ("%s:%s  "):format(src.path, src.lnum)
+                    if text:sub(1, #shown) == shown then
+                        text = text:sub(#shown + 1)
+                    end
+                    -- where the match at `col` ends, so the list can mark it later (`end_col`, exclusive)
+                    for _, r in ipairs(preview_matches({ text }, pattern, regex_grep)) do
+                        if r.c0 <= src.col - 1 and src.col - 1 < r.c1 then
+                            end_col = r.c1 + 1
+                            break
+                        end
+                    end
+                end
                 qf[#qf + 1] = {
                     filename = src.path,
                     bufnr = (not src.path) and src.bufnr or nil,
@@ -819,7 +854,9 @@ build = function(opts, kind)
                     -- file list from a grep/diagnostic one; vim still jumps to the file's top.
                     lnum = src.lnum or 0,
                     col = src.col or 0,
-                    text = src.text or "",
+                    end_lnum = end_col and src.lnum or nil,
+                    end_col = end_col,
+                    text = text,
                 }
             end
         end
@@ -832,7 +869,13 @@ build = function(opts, kind)
         if state.st then
             state.st.close()
         end
-        vim.fn.setqflist({}, " ", { title = opts.title or "Picker", items = qf })
+        -- the grep pattern rides along in the list's context, so a later view of the list (the lvim-qf-loc
+        -- browser) can mark its matches again
+        vim.fn.setqflist({}, " ", {
+            title = opts.title or "Picker",
+            items = qf,
+            context = pattern and { lvim_picker = { pattern = pattern, regex = regex_grep } } or nil,
+        })
         vim.cmd("botright copen")
     end
 
@@ -1229,11 +1272,30 @@ build = function(opts, kind)
                         it.icon_hl = it.icon_hl and iconlib.on_bg({ image = true, hl = h }, it.icon_hl) or h
                     end
                 end
+                -- A caller item can name its own match spans (`match_bytes`, byte ranges in its display text —
+                -- e.g. a quickfix grep entry's col..end_col): shown while no query is typed; a typed query marks
+                -- its own characters instead.
+                if (it.match == nil or #it.match == 0) and it.match_bytes == nil and type(it._src) == "table" then
+                    it.match_bytes = it._src.match_bytes
+                end
                 local row, spans, lead = list_row(it, marked, marker)
+                -- A caller item can colour parts of its display text (`hl_spans`: `{ c0, c1, hl }` byte ranges,
+                -- e.g. aligned file / line columns); they sit in the label, after the mark column and the icon.
+                local src = type(it._src) == "table" and it._src or nil
+                local colour
+                if src and src.hl_spans then
+                    local base = #row - #(it.text or "")
+                    colour = {}
+                    for _, sp in ipairs(src.hl_spans) do
+                        colour[#colour + 1] = { c0 = base + sp[1], c1 = base + sp[2], hl = sp[3] }
+                    end
+                end
                 -- A match past the window's right edge is a row that says nothing about why it
                 -- matched. Scroll it in, fzf-style, unless the reader asked for wrapping instead.
                 if not list_wrap and clip_ellipsis ~= false then
-                    row, spans = clip_row(row, spans, lead, list_width(), clip_ellipsis or "…")
+                    local fixed = src and src.locator_bytes and (#row - #(it.text or "") - lead + src.locator_bytes)
+                    row, spans, colour =
+                        clip_row(row, spans, lead, list_width(), clip_ellipsis or "…", fixed or nil, colour)
                 end
                 lines[i] = row
                 local odd = (li % 2) == 1 -- stripe parity by LOGICAL index (stable while scrolling)
@@ -1250,6 +1312,9 @@ build = function(opts, kind)
                 -- stripe (incl. the selected row's strong tint) so it shows through; the row is `<lead><icon> …`.
                 if it.icon and it.icon ~= "" and it.icon_hl then
                     hls[#hls + 1] = { i - 1, lead, lead + #it.icon, it.icon_hl, 210 }
+                end
+                for _, cs in ipairs(colour or {}) do
+                    hls[#hls + 1] = { i - 1, cs.c0, cs.c1, cs.hl, 205 }
                 end
                 for _, ms in ipairs(spans) do
                     hls[#hls + 1] = { i - 1, ms.c0, ms.c1, hl("match", "LvimUiMsgAreaMatch"), 250 }
@@ -1347,8 +1412,14 @@ build = function(opts, kind)
             item = function()
                 local it = state.filtered[state.sel]
                 local s = it and it._src
-                return (s and s.path and s.path ~= "") and { filename = s.path, lnum = s.lnum, col = s.col } or nil
+                return (s and s.path and s.path ~= "")
+                        and { filename = s.path, lnum = s.lnum, col = s.col, end_lnum = s.end_lnum, end_col = s.end_col }
+                    or nil
             end,
+            -- a grep (or a caller-given pattern) marks its matches in the file preview too
+            matches = (opts.grep or opts.match_pattern) and function()
+                return match_pattern(), regex_grep
+            end or nil,
             number = (opts.preview_numbers == false) and "none" or "normal",
             empty = empty_preview, -- the configurable "nothing to preview" placeholder text
         })
