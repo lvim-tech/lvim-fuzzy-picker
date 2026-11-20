@@ -602,6 +602,7 @@ end
 ---@field format? fun(item: any): string  display text for a table item (default: `item.text`)
 ---@field preview? fun(item: any): string[], string?, integer?  preview lines (+ a filetype, + a 1-based focus line) per selection (SYNCHRONOUS, in-memory finders)
 ---@field preview_file_of? fun(item: any): { path: string, lnum?: integer, col?: integer, ft?: string }?  map an item to a FILE location previewed ASYNC (read off the main thread, LRU-cached) so the preview follows the cursor while scrolling; used by files/grep
+---@field on_open? fun(handle: { select: fun(pred: fun(item: any): boolean): boolean, is_open: fun(): boolean, focus_list: fun(), set_items: fun(items: any[], patch?: table), list_win: fun(): integer?, visible: fun(): any[], integer })  receives a handle to drive the open finder from outside
 ---@field match_pattern? string  the search pattern whose matches are marked in the rows' preview (and kept on `<C-q>`), as ripgrep ran it — see `regex`
 ---@field preview_file? boolean  preview the item's REAL file buffer (EDITABLE, 2-way synced) instead of `preview` lines; items need `path` (+ lnum/col)
 ---@field preview_side? "right"|"left"|"dynamic"|"hide"  where the preview sits (default `config.preview_side`); `dynamic` = full-width list + a peek float above it (native-qf style); `hide` = no preview (toggle with <C-e>)
@@ -617,7 +618,7 @@ end
 ---@field title_pos? "left"|"center"|"right"  title alignment override for THIS open (default: `config.title_pos`, layout-independent)
 ---@field counter? string  match-count placement: "footer" (default — the bottom-right border) | "title" (folded into the border-title)
 ---@field prompt? string  the query prompt prefix (default "󰅂 ")
----@field keys? { key: string, name?: string, mode?: "n"|"i", run: fun(item: any, close: fun()) }[]  extra row actions (split, code action…); `name` adds a footer hint; `mode` restricts the binding to the LIST (n) or the PROMPT (i) — absent = both
+---@field keys? { key: string, name?: string, mode?: "n"|"i", keep_insert?: boolean, run: fun(item: any, close: fun()) }[]  extra row actions (split, code action…); `name` adds a footer hint; `mode` restricts the binding to the LIST (n) or the PROMPT (i) — absent = both; `keep_insert` keeps the query in insert mode after the action
 ---@field filters? LvimUiFilterGroup[]  header filter button GROUPS — each `{ active = id, buttons = { { id, label, key?, predicate?(src), hl?, hl_active?, hl_hover_active? }, … } }`; activate a filter by its key in NORMAL mode
 ---@field refresh? fun(): any[]  re-fetch the static items live (e.g. on DiagnosticChanged) — see refresh_events
 ---@field refresh_events? string[]  autocmd events that trigger a refresh
@@ -2627,7 +2628,11 @@ build = function(opts, kind)
                             -- query, so a backspace left insert mode instead of deleting a character.
                             if a.mode ~= "n" then
                                 imap(a.key, function()
-                                    vim.cmd("stopinsert")
+                                    -- `keep_insert`: an action that leaves the finder where it is (a step through
+                                    -- the list) keeps the query typing; anything else leaves insert first
+                                    if not a.keep_insert then
+                                        vim.cmd("stopinsert")
+                                    end
                                     act(a.run)
                                 end)
                             end
@@ -2718,6 +2723,69 @@ build = function(opts, kind)
 
     -- initial: show all, select the first, preview it (fetch + fit + render)
     rerender()
+
+    -- A handle for the caller to drive this open finder from outside (e.g. keep its selection in step with a
+    -- list navigated elsewhere): `select(pred)` moves the selection to the first visible row whose source item
+    -- satisfies `pred`; `is_open()` tells whether the finder still shows.
+    if opts.on_open then
+        pcall(opts.on_open, {
+            select = function(pred)
+                if state.closed then
+                    return false
+                end
+                for i, it in ipairs(state.filtered) do
+                    if pred(it._src) then
+                        state.sel = i
+                        move(0)
+                        return true
+                    end
+                end
+                return false
+            end,
+            is_open = function()
+                return not state.closed
+            end,
+            -- REPLACE the rows in place (a new list behind the same finder) — no close / re-open, so nothing
+            -- flickers. `patch` updates options read while rendering (e.g. `match_pattern`, `regex`). The
+            -- marks are dropped (they belong to the old rows) and the selection goes to the top.
+            set_items = function(fresh, patch)
+                if state.closed or type(fresh) ~= "table" then
+                    return
+                end
+                for k, v in pairs(patch or {}) do
+                    opts[k] = v
+                end
+                if patch and patch.regex ~= nil then
+                    regex_grep = patch.regex == true
+                end
+                state.marked = {}
+                items = normalize(fresh, opts.format)
+                state.rendered_query = nil -- a new list starts at its top
+                refilter(state.query)
+            end,
+            -- the LIST window (nil while it has none) — for a consumer that lays its own float over the rows
+            list_win = function()
+                local p = state.list_pan
+                if not state.closed and p and p.win and api.nvim_win_is_valid(p.win) then
+                    return p.win
+                end
+            end,
+            -- the visible rows' source items, in display order, and the selected row's index into them
+            visible = function()
+                local out = {}
+                for i, it in ipairs(state.closed and {} or state.filtered) do
+                    out[i] = it._src
+                end
+                return out, state.sel
+            end,
+            -- the cursor on the LIST, in normal mode (out of the query): list keys work at once
+            focus_list = function()
+                if not state.closed then
+                    focus_list()
+                end
+            end,
+        })
+    end
 
     -- LIVE refresh: re-fetch the static items on `opts.refresh_events` (e.g. "DiagnosticChanged") via
     -- `opts.refresh()`, then re-narrow (filters) + re-fuzzy + re-render. Coalesce a burst into ONE reload.
