@@ -757,6 +757,23 @@ build = function(opts, kind)
             error(err, 0)
         end
     end
+    --- Put the picture's grid back into `panel`'s buffer — called by lvim-ui's `paint` at the END of the panel's own
+    --- write (leaving the input, the next keystroke): in the same turn, so no frame is ever drawn with the grid
+    --- wiped (that gap was the blink). The picture itself is not sent again (lvim-image knows the terminal has it).
+    local function put_picture_back(panel)
+        local old = state.preview_placement
+        if state.closed or not state.preview_picture or not old or old.buf ~= panel.buf then
+            return
+        end
+        state._attaching = true
+        local ok = pcall(function()
+            old.pl:render_placeholder()
+        end)
+        if ok and state.preview_desc then
+            require("lvim-picker.media").paint(panel.buf, state.preview_desc)
+        end
+        state._attaching = false
+    end
     attach_picture_now = function(pp)
         local old = state.preview_placement
         local pic = state.preview_picture
@@ -808,6 +825,9 @@ build = function(opts, kind)
             -- every place the preview can be shown in: this one, the docked panel, the peek float — rotating the
             -- preview re-renders whichever it moves to, and that is the moment to put the picture there
             local panel = state.preview_pan or (state.st and state.st.preview_panel)
+            if panel and panel.buf and not panel.after_paint then
+                panel.after_paint = put_picture_back
+            end
             watch(pp.buf)
             watch(panel and panel.buf)
             watch(state.st and state.st.dyn and state.st.dyn.buf)
