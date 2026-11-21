@@ -2,7 +2,7 @@
 --- PLUGINS (lvim-fuzzy-plugin-preview) choose the engine for its type from their configuration and compute the answer:
 --- a table of facts, a picture as a PNG in the plugin's cache, a directory's entries, a table, an archive's tree,
 --- text. The picker only turns the answer into lines of its preview buffer. It asks through
---- `lvim-fuzzy preview --plugin`; without that program nothing here answers and the picker previews text as it
+--- `lvim-fuzzy-cli preview --plugin`; without that program nothing here answers and the picker previews text as it
 --- always did.
 ---@module "lvim-picker.media"
 
@@ -11,7 +11,7 @@ local M = {}
 --- The engine's program, or nil.
 ---@return string?
 local function engine()
-    for _, name in ipairs({ "lvim-fuzzy", "lfz" }) do
+    for _, name in ipairs({ "lvim-fuzzy-cli" }) do
         local p = vim.fn.exepath(name)
         if p ~= "" then
             return p
@@ -19,7 +19,7 @@ local function engine()
     end
 end
 
---- Ask the preview plugins about `path` (`lvim-fuzzy preview --plugin`, off the main thread): the plugins decide
+--- Ask the preview plugins about `path` (`lvim-fuzzy-cli preview --plugin`, off the main thread): the plugins decide
 --- from THEIR configuration which engine shows this file type. `cb(instruction)`: the first instruction of the
 --- answer (`{ op = "preview", facts?, missing?, body?, renderer?, picture? }`), or nil when no plugin has a
 --- preview (pass), the engine is missing, or it failed.
@@ -32,7 +32,7 @@ function M.plugin(path, cb)
             cb(nil)
         end)
     end
-    local argv = { exe, "preview", "--plugin", "--host", "picker" }
+    local argv = { exe, "preview", "--plugin", "--host", "lvim-fuzzy-picker" }
     local over = require("lvim-picker.config").plugins
     if type(over) == "table" and next(over) ~= nil then
         vim.list_extend(argv, { "--plugins", vim.json.encode(over) })
@@ -126,7 +126,7 @@ function M.from_plugin(ins)
     return d
 end
 
---- Open `path` the way the open plugin says (`lvim-fuzzy open --resolve PATH`: the plugin's configuration decides
+--- Open `path` the way the open plugin says (`lvim-fuzzy-cli open --resolve PATH`: the plugin's configuration decides
 --- which program opens which type — the one rule lvc and lfz open files by): a picture in its viewer, a PDF in its
 --- reader, … started detached. True when the file was HANDLED here: a program was started, or the program that would
 --- open it is not installed (said, nothing opened). False for what the editor opens (text, a directory), when no plugin
@@ -138,7 +138,7 @@ function M.open_external(path)
     if not exe or path == "" or vim.fn.isdirectory(path) == 1 then
         return false
     end
-    local argv = { exe, "open", "--resolve", "--host", "picker" }
+    local argv = { exe, "open", "--resolve", "--host", "lvim-fuzzy-picker" }
     local over = require("lvim-picker.config").plugins
     if type(over) == "table" and next(over) ~= nil then
         vim.list_extend(argv, { "--plugins", vim.json.encode(over) })

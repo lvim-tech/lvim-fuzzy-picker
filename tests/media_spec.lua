@@ -1,4 +1,4 @@
--- lvim-picker.media: the picker asks the shared preview engine (`lvim-fuzzy preview`) about media and binary
+-- lvim-picker.media: the picker asks the shared preview engine (`lvim-fuzzy-cli preview`) about media and binary
 -- files; without the engine it previews as it always did. The engine here is a stand-in program that answers
 -- what the real one answers, so the test needs no build.
 
@@ -23,8 +23,8 @@ if [ "$2" = "--plugin" ]; then
   exit 0
 fi
 ]==]
-    vim.fn.writefile(vim.split(script, "\n"), d .. "/lvim-fuzzy")
-    vim.fn.setfperm(d .. "/lvim-fuzzy", "rwxr-xr-x")
+    vim.fn.writefile(vim.split(script, "\n"), d .. "/lvim-fuzzy-cli")
+    vim.fn.setfperm(d .. "/lvim-fuzzy-cli", "rwxr-xr-x")
     local old = vim.env.PATH
     vim.env.PATH = d .. ":" .. old
     return old, d
@@ -146,8 +146,8 @@ case "$*" in
   *) echo '{"action":"editor"}' ;;
 esac
 ]==]):format(flag)
-    vim.fn.writefile(vim.split(script, "\n"), d .. "/lvim-fuzzy")
-    vim.fn.setfperm(d .. "/lvim-fuzzy", "rwxr-xr-x")
+    vim.fn.writefile(vim.split(script, "\n"), d .. "/lvim-fuzzy-cli")
+    vim.fn.setfperm(d .. "/lvim-fuzzy-cli", "rwxr-xr-x")
     local old = vim.env.PATH
     vim.env.PATH = d .. ":" .. old
     local media = require("lvim-picker.media")
