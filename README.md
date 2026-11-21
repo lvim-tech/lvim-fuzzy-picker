@@ -12,7 +12,7 @@ set of keys, and docks as a centred float, a bottom dock, or the message-zone ar
 ## Requirements
 
 Requires **Neovim >= 0.12.x**, [lvim-utils](https://github.com/lvim-tech/lvim-utils),
-[lvim-ui](https://github.com/lvim-tech/lvim-ui) and [lvim-fuzzy](https://github.com/lvim-tech/lvim-fuzzy)
+[lvim-ui](https://github.com/lvim-tech/lvim-ui) and [lvim-fuzzy](https://github.com/lvim-tech/lvim-fuzzy-nvim)
 (the shared matching engine — lvim-fuzzy-core, the same as the terminal finder; its native library is
 required). `fd` (or `rg` / `find`) lists files, `rg` greps. Optional:
 [lvim-hud](https://github.com/lvim-tech/lvim-hud) (statusline title overlay) and
@@ -32,8 +32,8 @@ required). `fd` (or `rg` / `find`) lists files, `rg` greps. Optional:
 vim.pack.add({
     { src = "https://github.com/lvim-tech/lvim-utils" },
     { src = "https://github.com/lvim-tech/lvim-ui" },
-    { src = "https://github.com/lvim-tech/lvim-fuzzy" },
-    { src = "https://github.com/lvim-tech/lvim-picker" },
+    { src = "https://github.com/lvim-tech/lvim-fuzzy-nvim" },
+    { src = "https://github.com/lvim-tech/lvim-fuzzy-picker" },
 })
 require("lvim-picker").setup({})
 ```
@@ -422,3 +422,37 @@ work).
 ## License
 
 BSD-3-Clause.
+
+## Previews of pictures and binary files
+
+A picture, a video, a PDF, a font, a document or a sound is previewed as a table of facts about it (and the
+picture itself under it where the terminal takes graphics: lvim-image places it); a binary file as a note, never
+its bytes. The picker asks the same preview plugin lvim-fuzzy-commander and lvim-fuzzy-cli use (`lvim-fuzzy preview
+--plugin`, from the lvim-fuzzy-cli program, see "Preview plugins" below) — so all three agree. Without that program
+the picker previews text as it always did.
+
+## Opening a file in its program
+
+Enter on a file that is not text — a picture, a PDF, a video … — starts the program the open plugin
+(`lvim-fuzzy-plugin-open`) says, as lvim-fuzzy-commander and lvim-fuzzy-cli do (`lvim-fuzzy open --resolve PATH`;
+which program opens which type is the plugin's configuration — your own layer is `plugins = { ["lvim-fuzzy-plugin-open"] =
+{ … } }` in `setup`; the default is `xdg-open`), and the finder stays open. A program that is not installed is said and
+nothing is opened. Text and directories open in this
+editor as before. Without the `lvim-fuzzy` program nothing changes.
+
+## Preview plugins (`plugins`)
+
+Which engine shows a file type — a directory, a table, an archive, a binary file, text through `bat` — is the
+configuration of the preview plugins (`lvim-fuzzy-plugin-preview`), the same ones lvc and lfz use; the picker only draws the
+answer as lines of its preview buffer (a plugin that says "Neovim" leaves the file to the picker's own buffer). It asks
+through `lvim-fuzzy preview --plugin`, so it needs the `lvim-fuzzy` program. The picker's own settings:
+
+```lua
+require("lvim-picker").setup({
+    plugins = {
+        ["lvim-fuzzy-plugin-preview"] = { types = { rust = { ext = { "rs" }, engine = "bat" } } },
+    },
+})
+```
+
+Without the program or the plugin a directory has no preview of its own.

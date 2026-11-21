@@ -53,7 +53,7 @@ function M.check()
             )
         end
     else
-        err("lvim-fuzzy not found — lvim-picker ranks every finder through it (install lvim-tech/lvim-fuzzy)")
+        err("lvim-fuzzy not found — lvim-picker ranks every finder through it (install lvim-tech/lvim-fuzzy-nvim)")
     end
 
     if has("lvim-picker") and has("lvim-picker.fuzzy") then

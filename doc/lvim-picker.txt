@@ -42,8 +42,8 @@ Native (vim.pack): >lua
     vim.pack.add({
         { src = "https://github.com/lvim-tech/lvim-utils" },
         { src = "https://github.com/lvim-tech/lvim-ui" },
-        { src = "https://github.com/lvim-tech/lvim-fuzzy" },
-        { src = "https://github.com/lvim-tech/lvim-picker" },
+        { src = "https://github.com/lvim-tech/lvim-fuzzy-nvim" },
+        { src = "https://github.com/lvim-tech/lvim-fuzzy-picker" },
     })
     require("lvim-picker").setup({})
 <

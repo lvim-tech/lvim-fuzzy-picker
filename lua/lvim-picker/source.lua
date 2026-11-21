@@ -232,6 +232,27 @@ local PREVIEW_BYTE_CAP = 2 * 1024 * 1024
 ---@param max_lines integer
 ---@param cb fun(lines: string[], filetype: string)
 function M.read_preview_async(path, max_lines, cb)
+    local media = require("lvim-picker.media")
+    -- the preview plugins first: THEY decide from their configuration which engine shows this file type (a
+    -- directory, a table, an archive, a binary file, text through bat ...); a plugin that says "Neovim" /
+    -- "built-in" (or has nothing) leaves the file to the picker's own buffer below
+    return media.plugin(path, function(ins)
+        local plain = not ins or (ins.renderer and (not ins.missing or #ins.missing == 0))
+        if not plain then
+            local d = media.from_plugin(ins)
+            return cb(d.lines, "", d.picture and d.picture.path or nil, d)
+        end
+        M.read_media_or_text_async(path, max_lines, cb)
+    end)
+end
+
+--- What `read_preview_async` does for a file the plugins leave to the picker: its first lines.
+function M.read_media_or_text_async(path, max_lines, cb)
+    return M.read_text_preview_async(path, max_lines, cb)
+end
+
+--- The text path of `read_preview_async` (see there): the first lines of a file.
+function M.read_text_preview_async(path, max_lines, cb)
     local ft = vim.filetype.match({ filename = path }) or ""
     local function fail()
         vim.schedule(function()
@@ -253,6 +274,10 @@ function M.read_preview_async(path, max_lines, cb)
             uv.fs_close(fd, function() end)
             local data = table.concat(parts)
             vim.schedule(function()
+                -- a binary file (a NUL in its first 8 KB): never its bytes as text (the preview plugin gives the note)
+                if data:sub(1, 8192):find("\0", 1, true) then
+                    return cb({ "[binary file]" }, "")
+                end
                 -- Split at most `max_lines` lines on the main loop — O(bytes-up-to-max_lines), a small bounded
                 -- slice, never the whole (possibly enormous) file.
                 local lines, s, n = {}, 1, 0
@@ -286,24 +311,7 @@ function M.read_preview_async(path, max_lines, cb)
         uv.fs_fstat(fd, function(serr, st)
             if not serr and st and st.type == "directory" then
                 uv.fs_close(fd, function() end)
-                uv.fs_scandir(path, function(derr, req)
-                    if derr or not req then
-                        return fail()
-                    end
-                    local names = {}
-                    while true do
-                        local name = uv.fs_scandir_next(req)
-                        if not name then
-                            break
-                        end
-                        names[#names + 1] = name
-                    end
-                    table.sort(names)
-                    vim.schedule(function()
-                        cb(vim.list_slice(names, 1, max_lines), "")
-                    end)
-                end)
-                return
+                return fail() -- a directory is the preview plugin's (its entries), not the picker's
             end
             if serr or not st or st.type ~= "file" then
                 return not_a_file()

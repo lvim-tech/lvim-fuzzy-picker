@@ -743,11 +743,162 @@ build = function(opts, kind)
     --- Re-render the preview. The panel is the one the picker captured when it was first drawn, else the
     --- surface's own: a finder that OPENS in `dynamic` never draws its docked preview (it is parked from the
     --- start), so nothing was captured and the peek float above the dock never followed the list.
+    --- A PICTURE of the shown file (the shared engine's PNG): drawn under the table of facts that is the
+    --- preview's text, by lvim-image (kitty placeholders where the terminal takes them). Re-made after every
+    --- re-render of the panel (which rewrites its lines), and taken off when the preview is not a picture.
+    local attach_picture_now
+    local function attach_picture(pp)
+        state._attaching = true
+        local ok_run, err = pcall(function()
+            return attach_picture_now(pp)
+        end)
+        state._attaching = false
+        if not ok_run then
+            error(err, 0)
+        end
+    end
+    attach_picture_now = function(pp)
+        local old = state.preview_placement
+        local pic = state.preview_picture
+        -- WHERE the preview is shown now: the docked panel, or — in the `dynamic` layout — the peek float above
+        -- the dock (its own window and buffer; the docked panel is parked behind the list then). Hidden: nowhere.
+        local st = state.st
+        local target = pp
+        if st and st.preview_hidden then
+            target = nil
+        elseif st and st.preview_side == "dynamic" and st.dyn then
+            target = { win = st.dyn.win, buf = st.dyn.buf }
+        end
+        pp = target
+        local ok_win = pp and pp.win and pp.buf and vim.api.nvim_win_is_valid(pp.win) and vim.api.nvim_buf_is_valid(pp.buf)
+        if pic and ok_win then
+            -- The panel (the docked one, or the peek float) rewrites its lines whenever IT renders — leaving the
+            -- input with <Esc>, a resize, the next keystroke — and that wipes the picture's grid. Watch the
+            -- buffer: whenever its lines change from outside this function, put the picture back.
+            state.preview_watched = state.preview_watched or {}
+            local function watch(buf)
+                if not (buf and vim.api.nvim_buf_is_valid(buf)) or state.preview_watched[buf] then
+                    return
+                end
+                state.preview_watched[buf] = true
+                vim.api.nvim_buf_attach(buf, false, {
+                    on_lines = function()
+                        if state.closed then
+                            return true
+                        end
+                        if state._attaching or not state.preview_picture or state._reattach then
+                            return
+                        end
+                        state._reattach = true
+                        vim.schedule(function()
+                            state._reattach = false
+                            if state.closed or not state.preview_picture then
+                                return
+                            end
+                            attach_picture(state.preview_pan or (state.st and state.st.preview_panel))
+                        end)
+                    end,
+                    on_detach = function()
+                        if state.preview_watched then
+                            state.preview_watched[buf] = nil
+                        end
+                    end,
+                })
+            end
+            -- every place the preview can be shown in: this one, the docked panel, the peek float — rotating the
+            -- preview re-renders whichever it moves to, and that is the moment to put the picture there
+            local panel = state.preview_pan or (state.st and state.st.preview_panel)
+            watch(pp.buf)
+            watch(panel and panel.buf)
+            watch(state.st and state.st.dyn and state.st.dyn.buf)
+            -- as lvc and lfz draw it: no number column; the panel's own render puts these back on every refresh
+            for _, o in ipairs({ "number", "relativenumber", "list", "cursorline" }) do
+                pcall(function()
+                    vim.wo[pp.win][o] = false
+                end)
+            end
+            pcall(function()
+                vim.wo[pp.win].signcolumn = "no"
+                vim.wo[pp.win].wrap = false
+            end)
+        end
+        local win_h = ok_win and vim.api.nvim_win_get_height(pp.win) or 0
+        if old and pic and ok_win and old.pic == pic and old.win == pp.win and old.buf == pp.buf and old.h == win_h then
+            -- the same picture in the same panel: put its grid back (the render replaced the lines)
+            if pcall(function()
+                old.pl:render_placeholder()
+            end) then
+                if state.preview_desc then
+                    require("lvim-picker.media").paint(pp.buf, state.preview_desc)
+                end
+                return
+            end
+        end
+        if old then
+            pcall(function()
+                old.pl:close()
+            end)
+            state.preview_placement = nil
+        end
+        if state.closed or not (pic and ok_win) then
+            return
+        end
+        local ok, li = pcall(require, "lvim-image")
+        if not ok then
+            return
+        end
+        -- the room the picture really has: the window less its number / sign columns, and less the facts above it
+        local info = vim.fn.getwininfo(pp.win)[1] or {}
+        local head = state.preview_facts or {}
+        pcall(function()
+            vim.wo[pp.win].wrap = false
+        end)
+        -- as lvc and lfz draw it: no number column, and the table of facts in the same colours
+        for _, o in ipairs({ "number", "relativenumber", "list", "cursorline" }) do
+            pcall(function()
+                vim.wo[pp.win][o] = false
+            end)
+        end
+        pcall(function()
+            vim.wo[pp.win].signcolumn = "no"
+        end)
+        local info = vim.fn.getwininfo(pp.win)[1] or info
+        -- a WIDE, LOW preview (above the dock, or a short dock beside the list): the facts in a column on the
+        -- left, the picture beside them — under the facts it would be a strip. The same rule lvc and lfz use
+        -- (width >= 60 and at least three times the height).
+        local text_w = vim.api.nvim_win_get_width(pp.win) - (info.textoff or 0)
+        local side = text_w >= 60 and text_w >= 3 * win_h
+        local pl = li.attach(pp.buf, pp.win, pic, {
+            header = (not side) and head or nil,
+            gutter = side and head or nil,
+            center = false,
+            max_width = math.max(1, vim.api.nvim_win_get_width(pp.win) - (info.textoff or 0)),
+            -- the rows the window has for it — but a window that has not grown to its content yet (this runs
+            -- before the panel's relayout) is too short to say: then the rows reserved for it
+            max_height = (win_h > (side and 0 or #head) + 1) and math.min((config or {}).picture_rows or 14, win_h)
+                or (config or {}).picture_rows or 14,
+        })
+        if pl then
+            state.preview_placement = { pl = pl, pic = pic, win = pp.win, buf = pp.buf, h = win_h }
+            -- once the panel has settled (its relayout comes after this), look again: a different height
+            -- remakes the picture to fit
+            vim.defer_fn(function()
+                if state.closed or not state.preview_picture then
+                    return
+                end
+                attach_picture(state.preview_pan or (state.st and state.st.preview_panel))
+            end, 80)
+            if state.preview_desc then
+                require("lvim-picker.media").paint(pp.buf, state.preview_desc)
+            end
+        end
+    end
     local function preview_refresh()
         local pp = state.preview_pan or (state.st and state.st.preview_panel)
         if pp and pp.refresh then
             pp.refresh()
         end
+        attach_picture(pp)
     end
     local build_footer -- mode-aware footer legend (prompt ⇄ list), assigned near focus_input; used at open + on switch
     -- The GREP controller (assigned after `refilter`, referenced by it + the keymaps): (re)start rg for a query,
@@ -1009,6 +1160,11 @@ build = function(opts, kind)
             -- layout put during scroll (no tear) AND still AUTO-FITS the panel to the number of matches — a
             -- few-result grep gets a compact panel instead of a full-height one (the preview shows that many
             -- context rows). Identical to `list_h()` so the two panels always agree.
+            -- A PICTURE needs room: the panel is as tall as it may be while one is shown (the layout changes
+            -- only when a picture comes or goes, not row by row).
+            if state.preview_picture then
+                return maxr
+            end
             return list_h()
         end
         return math.min(#state.preview_lines, maxr)
@@ -1547,15 +1703,18 @@ build = function(opts, kind)
         if opts.preview_file or not opts.preview then
             -- the editable file preview owns its buffer (ui.preview); no scratch lines to cache
             state.preview_lines, state.preview_ft, state.preview_focus = {}, nil, nil
+            state.preview_picture = nil
             return
         end
         local it = state.filtered[state.sel]
         if not it then
             state.preview_lines, state.preview_ft, state.preview_focus = {}, nil, nil
+            state.preview_picture = nil
             return
         end
         local lines, ft, focus = opts.preview(it._src)
         state.preview_lines = (type(lines) == "table" and lines) or (lines and { tostring(lines) }) or {}
+        state.preview_picture = nil
         state.preview_ft, state.preview_focus = ft, focus
     end
     -- Re-fit the surface to the CONTENT height (the taller of list/preview, capped) — only when it actually
@@ -1576,7 +1735,7 @@ build = function(opts, kind)
     -- An LRU cache keyed by PATH makes re-visiting a file instant (scrolling within one grep file, or back over
     -- rows), and a SINGLE in-flight read that always re-targets the LATEST selection keeps the preview
     -- converging on the current row like fzf (never a pile of parallel reads, never a stale frame kept).
-    local preview_cache = {} ---@type table<string, { lines: string[], ft: string }>
+    local preview_cache = {} ---@type table<string, { lines: string[], ft: string, picture: string? }>
     local preview_lru = {} ---@type string[]  MRU-ordered paths (index 1 = most recently used)
     local preview_inflight = false
     -- Every preview request takes a number; showing a preview from memory (the sync fallback below) records its
@@ -1606,11 +1765,11 @@ build = function(opts, kind)
     ---@param path string
     ---@param lines string[]
     ---@param ft string
-    local function cache_put(path, lines, ft)
+    local function cache_put(path, lines, ft, picture, facts)
         if not preview_cache[path] then
             table.insert(preview_lru, 1, path)
         end
-        preview_cache[path] = { lines = lines, ft = ft }
+        preview_cache[path] = { lines = lines, ft = ft, picture = picture, facts = facts }
         local cap = (config or {}).preview_cache or 32
         while #preview_lru > cap do
             local old = table.remove(preview_lru)
@@ -1624,6 +1783,19 @@ build = function(opts, kind)
     ---@param entry { lines: string[], ft: string }
     local function apply_async_preview(want, entry)
         state.preview_lines = entry.lines
+        state.preview_facts = nil
+        state.preview_picture = entry.picture
+        state.preview_desc = entry.facts
+        if entry.picture then
+            -- the panels size themselves by the lines they show (the peek above the dock too): the facts are
+            -- followed by blank lines the picture is drawn over, so there is room for it
+            state.preview_facts = entry.lines
+            local pad = {}
+            for i = 1, (config or {}).picture_rows or 14 do
+                pad[i] = ""
+            end
+            state.preview_lines = vim.list_extend(vim.list_slice(entry.lines, 1), pad)
+        end
         state.preview_ft = want.ft or entry.ft
         state.preview_focus = want.lnum and math.max(1, math.min(want.lnum, #entry.lines)) or nil
         state.preview_col = want.col
@@ -1647,14 +1819,14 @@ build = function(opts, kind)
             return pump_preview() -- a newer selection may already be waiting
         end
         preview_inflight = true
-        source.read_preview_async(want.path, want.max, function(lines, ft)
+        source.read_preview_async(want.path, want.max, function(lines, ft, picture, facts)
             preview_inflight = false
             if state.closed then
                 return
             end
-            cache_put(want.path, lines, ft)
+            cache_put(want.path, lines, ft, picture, facts)
             if want.seq > preview_sync_seq then
-                apply_async_preview(want, { lines = lines, ft = ft })
+                apply_async_preview(want, { lines = lines, ft = ft, picture = picture, facts = facts })
             end
             pump_preview()
         end)
@@ -1672,9 +1844,11 @@ build = function(opts, kind)
             if it and opts.preview then
                 local lines, ft, focus = opts.preview(it._src)
                 state.preview_lines = (type(lines) == "table" and lines) or (lines and { tostring(lines) }) or {}
+                state.preview_picture = nil
                 state.preview_ft, state.preview_focus = ft, focus
             else
                 state.preview_lines, state.preview_ft, state.preview_focus = {}, nil, nil
+                state.preview_picture = nil
             end
             state.preview_loc, state.preview_col = nil, nil
             refit()
@@ -2166,6 +2340,14 @@ build = function(opts, kind)
     ---@param method? "vsplit"|"split"
     confirm = function(method)
         local it = state.filtered[state.sel]
+        -- a file that is not text (a picture, a PDF …) opens in the program the open plugin says — as in lvc and
+        -- lfz — and the finder stays open; text and directories go on to open in this editor
+        if it and opts.preview_file_of then
+            local loc = opts.preview_file_of(it._src)
+            if loc and loc.path and loc.path ~= "" and require("lvim-picker.media").open_external(loc.path) then
+                return
+            end
+        end
         state.handled = true -- we own the outcome → on_close must not also fire on_cancel
         with_handoff(function()
             local function route()
@@ -2254,6 +2436,11 @@ build = function(opts, kind)
         end
         if preview_provider then
             hints[#hints + 1] = { key = "C-d/u", name = "preview" }
+            -- turn the preview (right → left → above → hidden), both ways, and hide it
+            local np, pp_ = (kcfg.preview_next or ""), (kcfg.preview_prev or "")
+            if type(np) == "string" and np ~= "" and type(pp_) == "string" and pp_ ~= "" then
+                hints[#hints + 1] = { key = klabel(np) .. "/" .. klabel(pp_):gsub("^C%-", ""), name = "turn" }
+            end
         end
         for _, a in ipairs(opts.keys or {}) do
             -- a `mode`-restricted row action is only hinted in the context it actually works in
@@ -2599,6 +2786,31 @@ build = function(opts, kind)
                         imap("<C-u>", function()
                             scroll_preview(-1)
                         end)
+                        -- turn / hide the preview from the query too (the list has the surface's own keys)
+                        local function turn(dir)
+                            return function()
+                                vim.cmd("stopinsert") -- the rotation hands the focus to the list (normal mode)
+                                local st = state.st
+                                if st and st.rotate_preview then
+                                    st.rotate_preview(dir)
+                                end
+                            end
+                        end
+                        for _, k in ipairs(keylist(kcfg.preview_next)) do
+                            imap(k, turn(1))
+                        end
+                        for _, k in ipairs(keylist(kcfg.preview_prev)) do
+                            imap(k, turn(-1))
+                        end
+                        for _, k in ipairs(keylist(kcfg.preview_toggle)) do
+                            imap(k, function()
+                                vim.cmd("stopinsert")
+                                local st = state.st
+                                if st and st.toggle_preview then
+                                    st.toggle_preview()
+                                end
+                            end)
+                        end
                         imap("<CR>", function()
                             vim.cmd("stopinsert")
                             confirm()
@@ -2653,6 +2865,12 @@ build = function(opts, kind)
         close_keys = {}, -- the input owns <Esc>/<C-c>; the panels are not normally focused
         on_close = function()
             state.closed = true
+            if state.preview_placement then -- the picture of an image preview goes with the picker
+                pcall(function()
+                    state.preview_placement.pl:close()
+                end)
+                state.preview_placement = nil
+            end
             -- Dismissed externally (replaced by the next finder via the shared registry, or a surface-owned
             -- close) with no confirm / cancel / row action having run → treat it as a cancel so restore-on-cancel
             -- finders (e.g. colorschemes) are not silently skipped. `confirm`/`cancel`/`act` set `state.handled`.

@@ -13,18 +13,7 @@ local function tree()
     return d
 end
 
-describe("lvim-picker.source: directory previews")
-
-it("the async preview of a directory is its listing", function()
-    local got
-    source.read_preview_async(tree(), 100, function(lines, ft)
-        got = { lines = lines, ft = ft }
-    end)
-    vim.wait(2000, function()
-        return got ~= nil
-    end, 10)
-    eq({ lines = { ".hidden", "a.txt", "b.lua", "sub" }, ft = "" }, got)
-end)
+describe("lvim-picker.source: file previews")
 
 it("the async preview of a file is still its lines", function()
     local f = vim.fn.tempname() .. ".lua"

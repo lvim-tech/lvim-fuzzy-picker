@@ -12,6 +12,7 @@
 ---@class LvimPickerConfig
 ---@field layout          string   Default layout for every finder: "area" | "float" | "bottom"
 ---@field max_rows        integer? Optional local cap on the visible rows; nil = follow the central dock geometry height
+---@field picture_rows   integer  rows a picture preview gets under its table of facts (blank lines reserved for it)
 ---@field dock            LvimPickerDock  This plugin's OWN docking defaults (namespaced): dock_stack + per-layout force geometry
 ---@field debounce_ms     integer  debounce of the query match, in ms (0 = a fresh match on every keystroke)
 ---@field stream_refresh_ms integer  (streamed finders) how often, in ms, the growing pool re-renders while streaming
@@ -30,6 +31,7 @@
 ---@field preview_debounce_ms integer  (in-memory previews) at most one preview update per this many ms while scrolling; 0 = every move
 ---@field preview_cache      integer  How many recently previewed files the async file-preview LRU cache keeps (instant re-visits)
 ---@field preview_max_lines  integer  Hard cap on lines materialised per async file preview (bounds a deep match in a huge file)
+---@field plugins         table    The picker's OWN settings for the lvim plugins (lvim-fuzzy-plugin-preview ...): `{ ["lvim-fuzzy-plugin-preview"] = { types = { rust = { ext = { "rs" }, engine = "bat" } } } }` — the layer over the plugin's defaults and the shared ~/.config/lvim-plugins/<name>.toml
 ---@field source          table    files/directories listing engine + what it ignores (engine / exclude / hidden / …)
 ---@field icons           table    Shared glyphs used by source helpers
 ---@field icon_provider    "auto"|"lvim"|"devicons"|"mini"  Which plugin supplies file icons (via lvim-utils.icons)
@@ -55,6 +57,11 @@ return {
     -- exactly like every other lvim-tech panel. Set a number only to make THIS plugin's lists deliberately
     -- shorter than the dock allows; a per-call `opts.max_rows` overrides it.
     max_rows = nil,
+
+    -- How many rows a PICTURE preview (an image, a video frame, a PDF page ...) gets under its table of facts.
+    -- The preview panels size themselves by the lines they show, so this many blank lines are reserved; the
+    -- picture is fitted into what the window really has.
+    picture_rows = 14,
 
     -- This plugin's OWN docking defaults, NAMESPACED under `dock` (matching lvim-dependencies'
     -- `config.dock.dock_stack` / `config.dock.force`). Per-call `opts.dock_stack` / `opts.force`
@@ -139,6 +146,12 @@ return {
     -- source files; raise it if you routinely preview matches past this line in large files.
     preview_max_lines = 2000,
 
+    -- The picker's own overrides of the plugins' settings (the preview plugins decide WHICH ENGINE shows a file type:
+    -- a directory, a table, an archive, text ... — see lvim-fuzzy-plugin-preview). A table per plugin; merged over the
+    -- plugin's defaults and the shared `~/.config/lvim-plugins/<name>.toml`, so the picker may map the types
+    -- differently from lvc and lfz. Needs the `lvim-fuzzy` program (the plugin host lives there).
+    plugins = {},
+
     -- The finder keys you can rebind. A value may be a single key or a LIST of keys (all bound to that action);
     -- "" / {} disables an action. The fixed keys — <CR> open, j/k (list) or C-j/C-k (prompt) move, C-d/C-u
     -- scroll the preview, C-f prompt ⇄ list, q/<Esc> close — are listed by the cheatsheet (`help`) too.
@@ -155,6 +168,13 @@ return {
         -- (grep, FILTER mode) cycle what the filter reads in each result: the line's text → the file path →
         -- the whole file (see `grep_scope` below). Bound in the query input and the normal-mode list.
         grep_scope = "<C-s>",
+        -- TURN the preview: right → left → above the dock → hidden → right (`preview_next`), the other way round
+        -- (`preview_prev`), and HIDE ⇄ SHOW it (`preview_toggle`). Bound in the query input AND on the list (the
+        -- list's own are lvim-ui's `preview_next` / `preview_prev` / `toggle_preview`, the same keys by default).
+        -- lvim-fuzzy-cli (lfz) turns its preview through the same places with alt-p / alt-P and hides it with alt-e.
+        preview_next = "<C-n>",
+        preview_prev = "<C-p>",
+        preview_toggle = "<C-e>",
         -- OPEN IN A SPLIT of the window the finder was opened from: a NORMAL key (`n`, plain — on the list) and
         -- an INSERT key (`i`, a Ctrl chord — plain keys type into the query) per method.
         open_methods = {
