@@ -92,17 +92,18 @@ function M.check()
         )
     end
     -- the plugin host: the picture / PDF / archive previews and the open rule come from the shared plugins
-    if vim.fn.executable("lvim-plugin") == 1 then
+    local which = require("lvim-utils.pluginhost").which
+    if which("lvim-plugin") then
         ok("lvim-plugin found — the picture / PDF / archive / table previews and the open rule come from the shared plugins")
     else
-        info("lvim-plugin not on PATH — no picture / PDF / archive previews; text previews work as before (optional)")
+        info("lvim-plugin is not installed — no picture / PDF / archive previews; text previews work as before (optional; install: sh scripts/install.sh)")
     end
     -- lfz's modes (git log, processes, docker, …) are defined once, in lvim-fuzzy-cli
-    if vim.fn.executable("lvim-fuzzy-cli") == 1 then
+    if which("lvim-fuzzy-cli") then
         local n = #require("lvim-picker.modes").list()
         ok(("lvim-fuzzy-cli found — %d lfz modes as finders (`:LvimPicker mode <name>`)"):format(n))
     else
-        info("lvim-fuzzy-cli not on PATH — the lfz modes (git log, processes, docker, …) are off; the native finders work as before (optional)")
+        info("lvim-fuzzy-cli is not installed (sh scripts/install.sh) — the lfz modes (git log, processes, docker, …) are off; the native finders work as before (optional)")
     end
     if has("lvim-hud.overlay") then
         ok("lvim-hud present — a finder title can publish to the statusline overlay")

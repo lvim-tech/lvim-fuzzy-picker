@@ -18,8 +18,7 @@ local cache
 --- The engine's program, or nil.
 ---@return string?
 local function engine()
-    local p = vim.fn.exepath("lvim-fuzzy-cli")
-    return p ~= "" and p or nil
+    return require("lvim-utils.pluginhost").which("lvim-fuzzy-cli")
 end
 
 --- Every mode the picker can run: the engine's modes without the live/pattern ones and the native ones.

@@ -38,6 +38,14 @@ vim.pack.add({
 require("lvim-picker").setup({})
 ```
 
+### Helpers for pictures, archives and the lfz modes (optional)
+
+The previews of pictures / PDFs / archives / tables and opening with the system's program come from the shared plugin host `lvim-plugin` and its
+preview and open plugins; the lfz modes (git log, processes, docker, systemd, ssh, …) come from `lvim-fuzzy-cli`. Nothing has to be installed first
+— **not the terminal programs, not other lvim checkouts**: `sh scripts/install.sh` fetches them from GitHub and builds them (git and cargo are
+needed: https://rustup.rs). With lvim-pack: `build = "sh scripts/install.sh"`. They are found in `~/.local/bin` even when that is not in
+Neovim's PATH; `:checkhealth lvim-picker` says what is there. Without them the native finders and text previews work as before.
+
 ## Usage
 
 `setup()` registers `:LvimPicker <finder> [area|float|bottom]`; each finder is also a Lua function:
