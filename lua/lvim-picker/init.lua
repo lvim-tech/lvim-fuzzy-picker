@@ -601,6 +601,7 @@ end
 ---@field on_close? fun()  finder-owned teardown run on close (e.g. a live source killing its in-flight process)
 ---@field format? fun(item: any): string  display text for a table item (default: `item.text`)
 ---@field preview? fun(item: any): string[], string?, integer?  preview lines (+ a filetype, + a 1-based focus line) per selection (SYNCHRONOUS, in-memory finders)
+---@field preview_async? fun(item: any, cb: fun(lines: string[], ft: string?))  an ASYNC text preview per selection (a command's output): the preview shows "…" until `cb` is called; answers are remembered per item
 ---@field preview_file_of? fun(item: any): { path: string, lnum?: integer, col?: integer, ft?: string }?  map an item to a FILE location previewed ASYNC (read off the main thread, LRU-cached) so the preview follows the cursor while scrolling; used by files/grep
 ---@field on_open? fun(handle: { select: fun(pred: fun(item: any): boolean): boolean, is_open: fun(): boolean, focus_list: fun(), set_items: fun(items: any[], patch?: table), list_win: fun(): integer?, visible: fun(): any[], integer })  receives a handle to drive the open finder from outside
 ---@field match_pattern? string  the search pattern whose matches are marked in the rows' preview (and kept on `<C-q>`), as ripgrep ran it — see `regex`
@@ -618,6 +619,9 @@ end
 ---@field title_pos? "left"|"center"|"right"  title alignment override for THIS open (default: `config.title_pos`, layout-independent)
 ---@field counter? string  match-count placement: "footer" (default — the bottom-right border) | "title" (folded into the border-title)
 ---@field prompt? string  the query prompt prefix (default "󰅂 ")
+---@field placeholder? string  the hint in the empty query field (default "type to search…")
+---@field start_in_list? boolean  open with the cursor on the LIST (normal mode), not in the query: `/` or `C-f` types
+---@field hints? fun(ctx: "prompt"|"list", item: any): { key: string, name: string }[]  REPLACES the footer legend (the caller says exactly which buttons show, per selected row); re-asked whenever the selection moves
 ---@field keys? { key: string, name?: string, mode?: "n"|"i", keep_insert?: boolean, run: fun(item: any, close: fun()) }[]  extra row actions (split, code action…); `name` adds a footer hint; `mode` restricts the binding to the LIST (n) or the PROMPT (i) — absent = both; `keep_insert` keeps the query in insert mode after the action
 ---@field filters? LvimUiFilterGroup[]  header filter button GROUPS — each `{ active = id, buttons = { { id, label, key?, predicate?(src), hl?, hl_active?, hl_hover_active? }, … } }`; activate a filter by its key in NORMAL mode
 ---@field refresh? fun(): any[]  re-fetch the static items live (e.g. on DiagnosticChanged) — see refresh_events
@@ -1326,7 +1330,7 @@ build = function(opts, kind)
             -- A selected item with no path → its text; NO results → the empty label in the file-name spot.
             vim.wo[pan.win].winbar = ("%%#%s# %s %%#%s#%%="):format(
                 hl("preview_file", "LvimUiPeekFile"),
-                esc((it and it.text) or empty_text),
+                esc((type(it) == "table" and it.text) or (type(it) == "string" and it ~= "" and it) or empty_text),
                 hl("bar", "LvimUiPeekFileBar")
             )
         end
@@ -1716,9 +1720,36 @@ build = function(opts, kind)
     --- Fetch the CURRENT selection's SYNCHRONOUS in-memory preview (lsp / diagnostics / buffers — cheap, no
     --- disk). File-based previews (`opts.preview_file_of`) are read ASYNC below and must NOT be touched here
     --- (this runs on every rerender and would wipe the async-loaded lines). No preview / no selection ⇒ empty.
+    local async_memo = {} ---@type table<any, { lines: string[], ft: string? }>
     local function fetch_preview()
         if opts.preview_file_of then
             return -- the async file-preview path owns state.preview_lines
+        end
+        if opts.preview_async then
+            -- an ASYNC text preview (a command's output): shown from memory when seen before, else a placeholder
+            -- until `opts.preview_async` calls back; a late answer for a row no longer selected is only remembered
+            local it = state.filtered[state.sel]
+            state.preview_picture, state.preview_ft, state.preview_focus = nil, nil, nil
+            if not it then
+                state.preview_lines = {}
+                return
+            end
+            local key = it._src
+            local hit = async_memo[key]
+            if hit then
+                state.preview_lines, state.preview_ft = hit.lines, hit.ft
+                return
+            end
+            state.preview_lines = { "…" }
+            opts.preview_async(key, function(lines, ft)
+                async_memo[key] = { lines = lines, ft = ft }
+                local cur = state.filtered[state.sel]
+                if cur and cur._src == key then
+                    state.preview_lines, state.preview_ft = lines, ft
+                    pcall(preview_refresh)
+                end
+            end)
+            return
         end
         if opts.preview_file or not opts.preview then
             -- the editable file preview owns its buffer (ui.preview); no scratch lines to cache
@@ -1944,6 +1975,9 @@ build = function(opts, kind)
         end
         state.sel = math.max(1, math.min(#state.filtered, state.sel + d))
         rerender(true) -- LIGHT: move the selection stripe + list cursor + count now (a couple ms, never blocks)
+        if opts.hints and state.refresh_footer then
+            state.refresh_footer() -- the buttons depend on the row
+        end
         if opts.preview_file_of then
             request_preview() -- async file preview — follows the cursor while holding `j` (fzf-like)
         else
@@ -1976,6 +2010,9 @@ build = function(opts, kind)
         end
         state.rendered_query = state.query
         rerender(light)
+        if opts.hints and state.refresh_footer then
+            state.refresh_footer()
+        end
     end
     --- (blob stream) Turn `fuzzy.blob_filter` results (`{ idx, text }`, `idx` = the 1-based NATIVE candidate
     --- index) into grid rows. The `_src` item is DERIVED from the text via `opts.blob_item` and CACHED by
@@ -2432,6 +2469,13 @@ build = function(opts, kind)
         -- focus / close. The ONLY exception is the cheatsheet: `help` is pulled to the very end and set apart by a
         -- single `●` (config.footer_separator, `LvimUiFooterSep`), so "where the full key list is written down"
         -- reads as its own thing rather than one hint among the actions.
+        if opts.hints then
+            local cur = state.filtered and state.filtered[state.sel or 1]
+            local ok, own = pcall(opts.hints, ctx, cur and (cur._src or cur) or nil)
+            if ok and type(own) == "table" then
+                return own
+            end
+        end
         local hints
         if ctx == "list" then
             hints = {
@@ -2493,9 +2537,13 @@ build = function(opts, kind)
         return hints
     end
     local function set_footer_ctx(ctx)
+        state.footer_ctx = ctx
         if state.st and state.st.set_footer then
             state.st.set_footer({ bars = { { items = build_footer(ctx) } } })
         end
+    end
+    state.refresh_footer = function()
+        set_footer_ctx(state.footer_ctx or "prompt")
     end
     -- TWO MODES: the prompt is INSERT (fuzzy type); <Esc> drops to NORMAL on the list (j/k move,
     -- <C-l>/<C-h> panel nav, the filter bar) — `focus_input` returns to typing, `focus_list` leaves insert.
@@ -2756,6 +2804,7 @@ build = function(opts, kind)
                 hb[#hb + 1] = {
                     input = true,
                     prompt = prompt_text,
+                    placeholder = opts.placeholder,
                     prompt_hl = prompt_hl,
                     input_hl = input_hl,
                     filetype = "lvim-picker-prompt",
@@ -3023,6 +3072,15 @@ build = function(opts, kind)
                 end
             end,
         })
+    end
+
+    if opts.start_in_list then
+        -- the surface enters the query on open (scheduled): leave it once that has happened
+        vim.defer_fn(function()
+            if not state.closed then
+                focus_list()
+            end
+        end, 40)
     end
 
     -- LIVE refresh: re-fetch the static items on `opts.refresh_events` (e.g. "DiagnosticChanged") via
@@ -3955,6 +4013,13 @@ local function open_chooser(layout)
             items[#items + 1] = { text = km.icon .. "  " .. km.name, kind = kind }
         end
     end
+    -- the lfz modes (git status / log, processes, docker, …), when `lvim-fuzzy-cli` is there
+    local ok_modes, modes = pcall(require, "lvim-picker.modes")
+    if ok_modes then
+        for _, m in ipairs(modes.list()) do
+            items[#items + 1] = { text = "󰒓  " .. (m.title ~= "" and m.title or m.name), kind = "mode", mode = m.name }
+        end
+    end
     pick_items({
         title = "Pickers",
         items = items,
@@ -3962,6 +4027,10 @@ local function open_chooser(layout)
         -- stayed PARKED in the dock after the pick and resurfaced on every cycle.
         opts = { layout = layout, dock_stack = false },
         on_confirm = function(item)
+            if item and item.mode then
+                require("lvim-picker.modes").open(M, item.mode, layout and { layout = layout } or nil)
+                return
+            end
             local fn = item and item.kind and M[item.kind]
             if type(fn) == "function" then
                 fn(layout and { layout = layout } or nil)
@@ -3989,13 +4058,24 @@ function M.setup_command()
     vim.api.nvim_create_user_command("LvimPicker", function(o)
         -- A layout token (area|float|bottom) may appear ANYWHERE in the args; the remaining word (if any) is
         -- the finder. No finder → the chooser (fzf-lua's builtin menu). No layout → the config default.
-        local finder, layout
+        local finder, layout, arg
         for _, w in ipairs(o.fargs) do
             if not layout and vim.tbl_contains(LAYOUTS, w) then
                 layout = w
             elseif not finder then
                 finder = w
+            elseif not arg then
+                arg = w
             end
+        end
+        -- `:LvimPicker mode <name>` / `:LvimPicker <name>`: an lfz mode (git-log, processes, docker, …)
+        local modes = require("lvim-picker.modes")
+        if finder == "mode" and arg then
+            modes.open(M, arg, layout and { layout = layout } or nil)
+            return
+        elseif finder and type(M[finder]) ~= "function" and modes.find(finder) then
+            modes.open(M, finder, layout and { layout = layout } or nil)
+            return
         end
         if not finder then
             open_chooser(layout)
@@ -4014,10 +4094,14 @@ function M.setup_command()
             -- first token: a finder OR a layout (`:LvimPicker float` is valid); the second is whichever of the
             -- two the first was not — a layout token may come first, so after one the FINDERS are offered.
             local pool = {}
-            if #parts <= 2 then
-                pool = vim.list_extend(vim.deepcopy(FINDERS), LAYOUTS)
+            local mode_names = require("lvim-picker.modes").names()
+            local finders = vim.list_extend(vim.deepcopy(FINDERS), mode_names)
+            if parts[2] == "mode" and #parts >= 3 then
+                pool = mode_names
+            elseif #parts <= 2 then
+                pool = vim.list_extend(vim.list_extend(vim.deepcopy(finders), { "mode" }), LAYOUTS)
             elseif #parts == 3 then
-                pool = vim.tbl_contains(LAYOUTS, parts[2]) and FINDERS or LAYOUTS
+                pool = vim.tbl_contains(LAYOUTS, parts[2]) and finders or LAYOUTS
             end
             return vim.tbl_filter(function(n)
                 return n:find(arg_lead, 1, true) == 1

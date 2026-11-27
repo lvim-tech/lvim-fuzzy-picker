@@ -1,55 +1,39 @@
 --- The picker's client of the lvim preview plugins. lvc, lfz and this picker show a file the same way because the
 --- PLUGINS (lvim-fuzzy-plugin-preview) choose the engine for its type from their configuration and compute the answer:
 --- a table of facts, a picture as a PNG in the plugin's cache, a directory's entries, a table, an archive's tree,
---- text. The picker only turns the answer into lines of its preview buffer. It asks through
---- `lvim-fuzzy-cli preview --plugin`; without that program nothing here answers and the picker previews text as it
+--- text. The picker only turns the answer into lines of its preview buffer. It asks through the plugin host
+--- (`lvim-plugin host`, the client in lvim-utils.pluginhost); without it nothing here answers and the picker previews text as it
 --- always did.
 ---@module "lvim-picker.media"
 
 local M = {}
 
---- The engine's program, or nil.
----@return string?
-local function engine()
-    for _, name in ipairs({ "lvim-fuzzy-cli" }) do
-        local p = vim.fn.exepath(name)
-        if p ~= "" then
-            return p
-        end
+--- The plugin host's client, as the tool `lvim-fuzzy-picker`: the plugins decide from THEIR configuration (the shared files, then the picker's
+--- own `config.plugins`) which engine shows a file type. Made when first asked, so a setup() after this module loaded is read.
+local client
+
+---@return LvimUtilsPluginHost
+local function host()
+    if not client then
+        client = require("lvim-utils.pluginhost").new({
+            tool = "lvim-fuzzy-picker",
+            plugins = require("lvim-picker.config").plugins,
+        })
     end
+    return client
 end
 
---- Ask the preview plugins about `path` (`lvim-fuzzy-cli preview --plugin`, off the main thread): the plugins decide
---- from THEIR configuration which engine shows this file type. `cb(instruction)`: the first instruction of the
---- answer (`{ op = "preview", facts?, missing?, body?, renderer?, picture? }`), or nil when no plugin has a
---- preview (pass), the engine is missing, or it failed.
+--- Ask the preview plugins about `path` (through the plugin host, off the main thread): the plugins decide from THEIR configuration which
+--- engine shows this file type. `cb(instruction)`: the first instruction of the answer (`{ op = "preview", facts?, missing?, body?, renderer?,
+--- picture? }`), or nil when no plugin has a preview (pass), the host is missing, or it failed.
 ---@param path string
 ---@param cb fun(ins: table?)
 function M.plugin(path, cb)
-    local exe = engine()
-    if not exe then
-        return vim.schedule(function()
-            cb(nil)
-        end)
-    end
-    local argv = { exe, "preview", "--plugin", "--host", "lvim-fuzzy-picker" }
-    local over = require("lvim-picker.config").plugins
-    if type(over) == "table" and next(over) ~= nil then
-        vim.list_extend(argv, { "--plugins", vim.json.encode(over) })
-    end
-    vim.list_extend(argv, { "--px", "1000x800", "--", path })
-    vim.system(argv, { text = true }, function(res)
-        vim.schedule(function()
-            if res.code ~= 0 then
-                return cb(nil)
-            end
-            local ok, j = pcall(vim.json.decode, res.stdout)
-            local first = ok and vim.islist(j) and j[1] or nil
-            if type(first) ~= "table" or first.op ~= "preview" then
-                return cb(nil)
-            end
-            cb(first)
-        end)
+    host().call("lvim-fuzzy-plugin-preview", "preview", { path = path, max_px = { 1000, 800 }, host = "lvim-fuzzy-picker" }, function(ins, err)
+        if err or type(ins) ~= "table" or ins.op ~= "preview" then
+            return cb(nil)
+        end
+        cb(ins)
     end)
 end
 
@@ -126,38 +110,32 @@ function M.from_plugin(ins)
     return d
 end
 
---- Open `path` the way the open plugin says (`lvim-fuzzy-cli open --resolve PATH`: the plugin's configuration decides
---- which program opens which type — the one rule lvc and lfz open files by): a picture in its viewer, a PDF in its
---- reader, … started detached. True when the file was HANDLED here: a program was started, or the program that would
---- open it is not installed (said, nothing opened). False for what the editor opens (text, a directory), when no plugin
---- has an answer, and when the engine is missing — the picker then opens it as a buffer.
+--- Open `path` the way the open plugin says (through the plugin host: the plugin's configuration decides which program opens which
+--- type — the one rule lvc and lfz open files by): a picture in its viewer, a PDF in its reader, … started detached. True when the
+--- file was HANDLED here: a program was started, or the program that would open it is not installed (said, nothing opened). False
+--- for what the editor opens (text, a directory), when no plugin has an answer, and when the host is missing — the picker then opens
+--- it as a buffer.
 ---@param path string
 ---@return boolean
 function M.open_external(path)
-    local exe = engine()
-    if not exe or path == "" or vim.fn.isdirectory(path) == 1 then
+    if path == "" or vim.fn.isdirectory(path) == 1 or not host().available() then
         return false
     end
-    local argv = { exe, "open", "--resolve", "--host", "lvim-fuzzy-picker" }
-    local over = require("lvim-picker.config").plugins
-    if type(over) == "table" and next(over) ~= nil then
-        vim.list_extend(argv, { "--plugins", vim.json.encode(over) })
-    end
-    vim.list_extend(argv, { "--", path })
-    local ok, res = pcall(function()
-        return vim.system(argv, { text = true }):wait(5000)
+    local done, j = false, nil
+    host().call("lvim-fuzzy-plugin-open", "open", { path = path, host = "lvim-fuzzy-picker" }, function(ins)
+        done, j = true, ins
     end)
-    if not ok or res.code ~= 0 then
+    vim.wait(5000, function()
+        return done
+    end, 10)
+    if type(j) ~= "table" then
         return false
     end
-    local ok2, j = pcall(vim.json.decode, res.stdout)
-    if not ok2 or type(j) ~= "table" then
-        return false
-    end
-    if j.action == "missing" and type(j.missing) == "table" then
+    if j.missing and type(j.missing) == "table" and #j.missing > 0 then
         vim.notify(table.concat(j.missing, "; "), vim.log.levels.ERROR)
         return true
     end
+    j.cmd = j.cmd or nil
     if j.action ~= "exec" or type(j.cmd) ~= "string" then
         return false
     end

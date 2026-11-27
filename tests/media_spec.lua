@@ -1,30 +1,34 @@
--- lvim-picker.media: the picker asks the shared preview engine (`lvim-fuzzy-cli preview`) about media and binary
--- files; without the engine it previews as it always did. The engine here is a stand-in program that answers
--- what the real one answers, so the test needs no build.
+-- lvim-picker.media: the picker asks the shared plugins (through `lvim-plugin host`) about media and binary files; without the host it
+-- previews as it always did. The host here is a stand-in program that answers what the real plugins answer, so the test needs no build.
 
 local source = require("lvim-picker.source")
 
---- A directory holding a fake `lvim-fuzzy`, put first on PATH; returns the old PATH to restore.
-local function fake_engine()
+--- A directory holding a fake `lvim-plugin` (the plugin host: JSON lines on stdin / stdout), put first on PATH; returns the old PATH.
+--- It answers what the real plugins answer: the preview plugin by file name, the open plugin by file name.
+local function fake_engine(open_flag)
     local d = vim.fn.tempname()
     vim.fn.mkdir(d, "p")
     local script = [==[#!/bin/sh
-# the preview plugins' answer (`preview --plugin`): the plugins pick the engine by file type
-if [ "$2" = "--plugin" ]; then
-  case "$*" in
-    *pic.png*) echo '[{"op":"preview","facts":[["dimensions","10 × 20"],["format","PNG"]],"positions":1,"picture":{"path":"/tmp/x.png","width":10,"height":20}}]' ;;
-    *blob.bin*) echo '[{"op":"preview","facts":[["type","binary file"],["file size","3 B"]]}]' ;;
-    *dirx*) echo '[{"op":"preview","body":{"type":"entries","rows":[{"name":"sub","dir":true,"size":0},{"name":"a.txt","dir":false,"size":2048}]}}]' ;;
-    *tbl.csv*) echo '[{"op":"preview","body":{"type":"table","rows":[["name","age"],["ann","30"]]}}]' ;;
-    *nvim.txt*) echo '[{"op":"preview","renderer":"nvim"}]' ;;
-    *bat.rs*) echo '[{"op":"preview","missing":["bat is not installed"],"body":{"type":"text","ansi":true,"lines":["\u001b[31mfn\u001b[0m main"]}}]' ;;
-    *) echo '[{"op":"pass"}]' ;;
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed 's/.*"id":\([0-9]*\).*/\1/')
+  case "$line" in
+    *'"method":"quit"'*) exit 0 ;;
+    *pic.png*'"call":"open"'*|*'"call":"open"'*pic.png*) ans='[{"op":"open","action":"exec","cmd":"touch OPEN_FLAG"}]' ;;
+    *'"call":"open"'*) ans='[{"op":"open","action":"editor"}]' ;;
+    *pic.png*) ans='[{"op":"preview","facts":[["dimensions","10 × 20"],["format","PNG"]],"positions":1,"picture":{"path":"/tmp/x.png","width":10,"height":20}}]' ;;
+    *blob.bin*) ans='[{"op":"preview","facts":[["type","binary file"],["file size","3 B"]]}]' ;;
+    *dirx*) ans='[{"op":"preview","body":{"type":"entries","rows":[{"name":"sub","dir":true,"size":0},{"name":"a.txt","dir":false,"size":2048}]}}]' ;;
+    *tbl.csv*) ans='[{"op":"preview","body":{"type":"table","rows":[["name","age"],["ann","30"]]}}]' ;;
+    *nvim.txt*) ans='[{"op":"preview","renderer":"nvim"}]' ;;
+    *bat.rs*) ans='[{"op":"preview","missing":["bat is not installed"],"body":{"type":"text","ansi":true,"lines":["\u001b[31mfn\u001b[0m main"]}}]' ;;
+    *) ans='[{"op":"pass"}]' ;;
   esac
-  exit 0
-fi
+  printf '{"id":%s,"result":%s}\n' "$id" "$ans"
+done
 ]==]
-    vim.fn.writefile(vim.split(script, "\n"), d .. "/lvim-fuzzy-cli")
-    vim.fn.setfperm(d .. "/lvim-fuzzy-cli", "rwxr-xr-x")
+    script = script:gsub("OPEN_FLAG", open_flag or "/dev/null")
+    vim.fn.writefile(vim.split(script, "\n"), d .. "/lvim-plugin")
+    vim.fn.setfperm(d .. "/lvim-plugin", "rwxr-xr-x")
     local old = vim.env.PATH
     vim.env.PATH = d .. ":" .. old
     return old, d
@@ -140,16 +144,8 @@ it("a program is started for a picture, not for text, and nothing without the en
     local d = vim.fn.tempname()
     vim.fn.mkdir(d, "p")
     local flag = d .. "/started"
-    local script = ([==[#!/bin/sh
-case "$*" in
-  *pic.png*) echo '{"action":"exec","cmd":"touch %s"}' ;;
-  *) echo '{"action":"editor"}' ;;
-esac
-]==]):format(flag)
-    vim.fn.writefile(vim.split(script, "\n"), d .. "/lvim-fuzzy-cli")
-    vim.fn.setfperm(d .. "/lvim-fuzzy-cli", "rwxr-xr-x")
-    local old = vim.env.PATH
-    vim.env.PATH = d .. ":" .. old
+    local old = fake_engine(flag)
+    package.loaded["lvim-picker.media"] = nil
     local media = require("lvim-picker.media")
     vim.fn.writefile({ "x" }, d .. "/pic.png")
     vim.fn.writefile({ "x" }, d .. "/note.txt")
