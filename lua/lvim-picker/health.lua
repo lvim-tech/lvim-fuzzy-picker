@@ -98,12 +98,22 @@ function M.check()
     else
         info("lvim-plugin is not installed — no picture / PDF / archive previews; text previews work as before (optional; install: sh scripts/install.sh)")
     end
-    -- lfz's modes (git log, processes, docker, …) are defined once, in lvim-fuzzy-cli
-    if which("lvim-fuzzy-cli") then
-        local n = #require("lvim-picker.modes").list()
-        ok(("lvim-fuzzy-cli found — %d lfz modes as finders (`:LvimPicker mode <name>`)"):format(n))
+    -- the modes (git log, processes, docker, …) are defined once, in the modes plugin, served by the plugin host
+    if which("lvim-plugin") then
+        local modes
+        require("lvim-picker.modes").list(function(m)
+            modes = m
+        end)
+        vim.wait(3000, function()
+            return modes ~= nil
+        end, 20)
+        if modes and #modes > 0 then
+            ok(("lvim-fuzzy-plugin-modes found — %d modes as finders (`:LvimPicker mode <name>`)"):format(#modes))
+        else
+            info("the modes plugin is not installed (sh scripts/install.sh) — the modes (git log, processes, docker, …) are off; the native finders work as before (optional)")
+        end
     else
-        info("lvim-fuzzy-cli is not installed (sh scripts/install.sh) — the lfz modes (git log, processes, docker, …) are off; the native finders work as before (optional)")
+        info("lvim-plugin is not installed (sh scripts/install.sh) — the modes (git log, processes, docker, …) are off; the native finders work as before (optional)")
     end
     if has("lvim-hud.overlay") then
         ok("lvim-hud present — a finder title can publish to the statusline overlay")

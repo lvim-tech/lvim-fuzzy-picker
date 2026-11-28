@@ -23,6 +23,12 @@ local function host()
     return client
 end
 
+--- The plugin host's client of the picker (the previews, the open rule and the modes all ask through this one process).
+---@return LvimUtilsPluginHost
+function M.host()
+    return host()
+end
+
 --- Ask the preview plugins about `path` (through the plugin host, off the main thread): the plugins decide from THEIR configuration which
 --- engine shows this file type. `cb(instruction)`: the first instruction of the answer (`{ op = "preview", facts?, missing?, body?, renderer?,
 --- picture? }`), or nil when no plugin has a preview (pass), the host is missing, or it failed.

@@ -6,6 +6,8 @@ local source = require("lvim-picker.source")
 --- A directory holding a fake `lvim-plugin` (the plugin host: JSON lines on stdin / stdout), put first on PATH; returns the old PATH.
 --- It answers what the real plugins answer: the preview plugin by file name, the open plugin by file name.
 local function fake_engine(open_flag)
+    -- the module keeps ONE host client: a new one is made for this host (not the one an earlier spec started)
+    package.loaded["lvim-picker.media"] = nil
     local d = vim.fn.tempname()
     vim.fn.mkdir(d, "p")
     local script = [==[#!/bin/sh

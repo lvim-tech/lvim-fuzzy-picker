@@ -41,7 +41,10 @@ require("lvim-picker").setup({})
 ### Helpers for pictures, archives and the lfz modes (optional)
 
 The previews of pictures / PDFs / archives / tables and opening with the system's program come from the shared plugin host `lvim-plugin` and its
-preview and open plugins; the lfz modes (git log, processes, docker, systemd, ssh, …) come from `lvim-fuzzy-cli`. Nothing has to be installed first
+preview and open plugins; the modes (git log, processes, docker, systemd, ssh, …) come from the modes plugin `lvim-fuzzy-plugin-modes`, through the same
+host — the terminal program lfz is not needed. **Your own modes** (and changes to the built-in ones) are written in
+`~/.config/lvim-plugins/lvim-fuzzy-plugin-modes.toml` (`[modes.NAME]` tables; lfz reads the same file) — the `[modes]` of lfz's own `config.toml` do
+not reach the picker. Nothing has to be installed first
 — **not the terminal programs, not other lvim checkouts**: `sh scripts/install.sh` fetches them from GitHub and builds them (git and cargo are
 needed: https://rustup.rs). With lvim-pack: `build = "sh scripts/install.sh"`. They are found in `~/.local/bin` even when that is not in
 Neovim's PATH; `:checkhealth lvim-picker` says what is there. Without them the native finders and text previews work as before.
@@ -439,14 +442,14 @@ BSD-3-Clause.
 
 A picture, a video, a PDF, a font, a document or a sound is previewed as a table of facts about it (and the
 picture itself under it where the terminal takes graphics: lvim-image places it); a binary file as a note, never
-its bytes. The picker asks the same preview plugin lvim-fuzzy-commander and lvim-fuzzy-cli use (`lvim-fuzzy-cli preview
---plugin`, from the lvim-fuzzy-cli program, see "Preview plugins" below) — so all three agree. Without that program
-the picker previews text as it always did.
+its bytes. The picker asks the same preview plugin lvim-fuzzy-commander and lvim-fuzzy-cli use (through the plugin host
+`lvim-plugin host`, see "Preview plugins" below) — so all three agree. Without that program the picker previews text as
+it always did.
 
 ## Opening a file in its program
 
 Enter on a file that is not text — a picture, a PDF, a video … — starts the program the open plugin
-(`lvim-fuzzy-plugin-open`) says, as lvim-fuzzy-commander and lvim-fuzzy-cli do (`lvim-fuzzy-cli open --resolve PATH`;
+(`lvim-fuzzy-plugin-open`) says, as lvim-fuzzy-commander and lvim-fuzzy-cli do (asked through `lvim-plugin host`;
 which program opens which type is the plugin's configuration — your own layer is `plugins = { ["lvim-fuzzy-plugin-open"] =
 { … } }` in `setup`; the default is `xdg-open`), and the finder stays open. A program that is not installed is said and
 nothing is opened. Text and directories open in this
@@ -457,7 +460,7 @@ editor as before. Without the `lvim-fuzzy` program nothing changes.
 Which engine shows a file type — a directory, a table, an archive, a binary file, text through `bat` — is the
 configuration of the preview plugins (`lvim-fuzzy-plugin-preview`), the same ones lvc and lfz use; the picker only draws the
 answer as lines of its preview buffer (a plugin that says "Neovim" leaves the file to the picker's own buffer). It asks
-through `lvim-fuzzy-cli preview --plugin`, so it needs the `lvim-fuzzy` program. The picker's own settings:
+through `lvim-plugin host` (the plugin host program), so it needs `lvim-plugin`. The picker's own settings:
 
 ```lua
 require("lvim-picker").setup({
