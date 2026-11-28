@@ -605,28 +605,4 @@ return function(M, pick_items, filter, normalize, preview_span)
         })
     end
 
-    -- ── unified command ───────────────────────────────────────────────────────────
-    -- `:LvimPicker <finder> [layout]` — one entry point for every finder above. The 2nd arg ("area"|"float"|
-    -- "bottom") overrides `config.layout` for this call; bare = the configured default.
-    local FINDERS = {
-        "files",
-        "grep",
-        "grep_cword",
-        "grep_cWORD",
-        "grep_word",
-        "grep_visual",
-        "grep_curbuf",
-        "buffers",
-        "oldfiles",
-        "git_files",
-        "directories",
-        "help_tags",
-        "commands",
-        "keymaps",
-        "marks",
-        "quickfix",
-        "jumplist",
-        "colorschemes",
-    }
-    local LAYOUTS = { "area", "float", "bottom" }
 end

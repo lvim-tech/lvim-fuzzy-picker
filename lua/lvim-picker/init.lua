@@ -589,6 +589,31 @@ end
 -- The listing commands (file_list_cmd / dir_list_cmd), the preview reader (read_preview) and the async
 -- streamer (spawn_stream) are aliased from picker.source at the top of the file.
 
+-- ── unified command ───────────────────────────────────────────────────────────
+-- `:LvimPicker <finder> [layout]` — one entry point for every finder above. The 2nd arg ("area"|"float"|
+-- "bottom") overrides `config.layout` for this call; bare = the configured default.
+local FINDERS = {
+    "files",
+    "grep",
+    "grep_cword",
+    "grep_cWORD",
+    "grep_word",
+    "grep_visual",
+    "grep_curbuf",
+    "buffers",
+    "oldfiles",
+    "git_files",
+    "directories",
+    "help_tags",
+    "commands",
+    "keymaps",
+    "marks",
+    "quickfix",
+    "jumplist",
+    "colorschemes",
+}
+local LAYOUTS = { "area", "float", "bottom" }
+
 require("lvim-picker.finders")(M, pick_items, filter, normalize, preview_span)
 
 --- The finder CHOOSER — fzf-lua's builtin-menu equivalent: a native lvim-picker finder listing every built-in

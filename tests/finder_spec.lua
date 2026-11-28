@@ -55,3 +55,14 @@ it("opens, lists its items, narrows them as a query is typed, and closes", funct
     vim.wait(200)
     truthy(not handle.is_open(), "closed")
 end)
+
+describe("lvim-picker: the :LvimPicker command")
+
+it("knows its finders and layouts (completion and layout tokens)", function()
+    picker.setup_command()
+    local first = vim.fn.getcompletion("LvimPicker ", "cmdline")
+    truthy(vim.tbl_contains(first, "files"), "a finder is offered")
+    truthy(vim.tbl_contains(first, "float"), "a layout is offered")
+    local second = vim.fn.getcompletion("LvimPicker float ", "cmdline")
+    truthy(vim.tbl_contains(second, "grep"), "after a layout the finders come")
+end)
