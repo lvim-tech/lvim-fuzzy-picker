@@ -26,9 +26,22 @@ end
 --- Ask the preview plugins about `path` (through the plugin host, off the main thread): the plugins decide from THEIR configuration which
 --- engine shows this file type. `cb(instruction)`: the first instruction of the answer (`{ op = "preview", facts?, missing?, body?, renderer?,
 --- picture? }`), or nil when no plugin has a preview (pass), the host is missing, or it failed.
+--- The path as the plugin host, a process of its own that is not started in this Neovim's directory, can find it: a finder shows a file
+--- by its path relative to the finder's directory, so it is made absolute here (against this Neovim's current directory).
+---@param path string
+---@return string
+local function absolute(path)
+    if path == "" or path:sub(1, 1) == "/" or path:match("^%a+://") then
+        return path
+    end
+    local full = vim.fn.fnamemodify(path, ":p")
+    return (#full > 1 and full:sub(-1) == "/") and full:sub(1, -2) or full
+end
+
 ---@param path string
 ---@param cb fun(ins: table?)
 function M.plugin(path, cb)
+    path = absolute(path)
     host().call("lvim-fuzzy-plugin-preview", "preview", { path = path, max_px = { 1000, 800 }, host = "lvim-fuzzy-picker" }, function(ins, err)
         if err or type(ins) ~= "table" or ins.op ~= "preview" then
             return cb(nil)
@@ -121,6 +134,7 @@ function M.open_external(path)
     if path == "" or vim.fn.isdirectory(path) == 1 or not host().available() then
         return false
     end
+    path = absolute(path)
     local done, j = false, nil
     host().call("lvim-fuzzy-plugin-open", "open", { path = path, host = "lvim-fuzzy-picker" }, function(ins)
         done, j = true, ins

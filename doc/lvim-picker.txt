@@ -224,6 +224,11 @@ text, and a span that scrolls out is dropped rather than left pointing at the
 wrong characters. `list_clip = false` switches it off; `list_wrap = true`
 (soft-wrapped rows) takes precedence over both.
 
+The SCROLLBAR is a one-column thumb in the blank column right of the list and
+of the preview, shown while there is more than the window shows. `scrollbar =
+false` (or `{ list = true, preview = false }`) in the config, or `opts.scrollbar`
+in a call, switches it; unset it follows lvim-ui's `config.scrollbar` (on).
+
 WHERE THE MATCHES ARE. Centring the matched LINE answers only half the question a
 grep result raises; the other half is WHICH characters matched, and on a long line
 that is the half the reader came for. Every match of the live pattern inside the

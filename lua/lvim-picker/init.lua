@@ -607,12 +607,13 @@ end
 ---@field match_pattern? string  the search pattern whose matches are marked in the rows' preview (and kept on `<C-q>`), as ripgrep ran it — see `regex`
 ---@field preview_file? boolean  preview the item's REAL file buffer (EDITABLE, 2-way synced) instead of `preview` lines; items need `path` (+ lnum/col)
 ---@field preview_side? "right"|"left"|"dynamic"|"hide"  where the preview sits (default `config.preview_side`); `dynamic` = full-width list + a peek float above it (native-qf style); `hide` = no preview (toggle with <C-e>)
----@field preview_numbers? boolean  show line numbers in the preview (default true)
+---@field preview_numbers? boolean  show line numbers in the preview (default: `config.preview.numbers`, off)
 ---@field preview_wrap? boolean  soft-wrap the preview (default false)
 ---@field list_wrap? boolean  soft-wrap the list rows (no "↳" marker) so far-right matches stay visible (default false)
 ---@field list_clip? string|false  the mark for text scrolled off a row's left edge; `false` switches the row scrolling off (default `config.list_clip`)
 ---@field empty_text? string  shown when there are no results (list body + preview winbar)
 ---@field empty_preview? string  the "nothing to preview" placeholder bar text (default "Nothing to preview")
+---@field scrollbar? boolean|table  the thumbs right of the list and the preview: true / false, or { list = bool, preview = bool } (default: `config.scrollbar`)
 ---@field title? string  the finder title — the chassis native centered border-title
 ---@field icon? string  an optional leading glyph fronting the title
 ---@field title_line? string  title placement: "row" (a top content row, default) | "statusline" (the centralized chrome overlay) | "border" (opt-in native border-title)
@@ -1341,6 +1342,11 @@ build = function(opts, kind)
         -- the SELECTION is the Sel stripe (not a window cursorline), so hide the hardware cursor while the
         -- list is focused (NORMAL mode) — the bright row, not a block cursor, shows where you are.
         hide_cursor = true,
+        -- the scrollbar's view of the list: its matches over the rows that show (the buffer holds only the viewport)
+        scroll = function(pan)
+            local winbar = pan.win and api.nvim_win_is_valid(pan.win) and (vim.wo[pan.win].winbar or "") ~= ""
+            return { off = (state.view_top or 1) - 1, total = #state.filtered, rows = view_height(), top = winbar and 1 or 0, bottom = 0 }
+        end,
         -- the focused row's SOURCE value — so the surface's default `open`/split/vsplit/tab can act on it
         -- without the consumer wiring anything (items already carry `path`/`lnum`/`col`).
         selection = function()
@@ -1588,6 +1594,14 @@ build = function(opts, kind)
     --     sync with the file, its own `<C-h>`/`<C-l>` nav when focused. Items must carry `path` (+ lnum/col).
     --   • `opts.preview(src)` — a read-only scratch buffer of the returned `lines` (+ filetype, focus line).
     local preview_provider
+    --- Line numbers in the preview: this call's `opts.preview_numbers`, else `config.preview.numbers` (off).
+    local function want_numbers()
+        local want = opts.preview_numbers
+        if want == nil then
+            want = ((config or {}).preview or {}).numbers
+        end
+        return want == true
+    end
     if opts.preview_file then
         local up = preview.new({
             item = function()
@@ -1601,7 +1615,8 @@ build = function(opts, kind)
             matches = (opts.grep or opts.match_pattern) and function()
                 return match_pattern(), regex_grep
             end or nil,
-            number = (opts.preview_numbers == false) and "none" or "normal",
+            -- no number column in the preview (as lfz and lvc show it) unless asked: `config.preview.numbers = true` or this call's `opts.preview_numbers`
+            number = want_numbers() and "normal" or "none",
             empty = empty_preview, -- the configurable "nothing to preview" placeholder text
         })
         preview_provider = {
@@ -1648,7 +1663,7 @@ build = function(opts, kind)
                         return
                     end
                     if pan.win and api.nvim_win_is_valid(pan.win) then
-                        vim.wo[pan.win].number = opts.preview_numbers ~= false -- restore line numbers
+                        vim.wo[pan.win].number = want_numbers() -- restore line numbers
                     end
                     api.nvim_buf_clear_namespace(pan.buf, NS, 0, -1)
                     local lines = state.preview_lines or {}
@@ -1691,7 +1706,7 @@ build = function(opts, kind)
                     state.preview_pan = pan
                     tame_win(pan.win, opts.preview_wrap == true) -- no "↳" marker; wrap off unless opted in
                     if pan.win and api.nvim_win_is_valid(pan.win) then
-                        vim.wo[pan.win].number = opts.preview_numbers ~= false -- line numbers in the preview
+                        vim.wo[pan.win].number = want_numbers() -- line numbers in the preview
                     end
                     -- NORMAL-mode keys on the preview (focused via <Tab>): the buffer is read-only, so a stray
                     -- `i`/`a` would error E21 — map them (and `/`) back to typing; `q`/<Esc> close, `<CR>` opens
@@ -2342,16 +2357,17 @@ build = function(opts, kind)
             state.st.refresh_chrome()
         end
     end
-    scroll_preview = function(dir)
+    scroll_preview = function(dir, line)
         -- The surface knows which window holds the preview right now — the docked panel, or the `dynamic`
         -- peek FLOAT above the dock (where the docked panel is parked, so scrolling it did nothing).
         if state.st and state.st.scroll_preview then
-            return state.st.scroll_preview(dir)
+            return state.st.scroll_preview(dir, line)
         end
         local p = state.preview_pan
         if p and p.win and api.nvim_win_is_valid(p.win) then
             api.nvim_win_call(p.win, function()
-                vim.cmd("normal! " .. api.nvim_replace_termcodes(dir > 0 and "<C-d>" or "<C-u>", true, false, true))
+                local key = line and (dir > 0 and "<C-e>" or "<C-y>") or (dir > 0 and "<C-d>" or "<C-u>")
+                vim.cmd("normal! " .. api.nvim_replace_termcodes(key, true, false, true))
             end)
         end
     end
@@ -2500,10 +2516,20 @@ build = function(opts, kind)
         end
         if preview_provider then
             hints[#hints + 1] = { key = "C-d/u", name = "preview" }
-            -- turn the preview (right → left → above → hidden), both ways, and hide it
-            local np, pp_ = (kcfg.preview_next or ""), (kcfg.preview_prev or "")
-            if type(np) == "string" and np ~= "" and type(pp_) == "string" and pp_ ~= "" then
+            -- one line at a time, turn the preview (right → left → above), and hide / show it
+            local ld, lu = keylist(kcfg.preview_line_down)[1], keylist(kcfg.preview_line_up)[1]
+            if ld and lu then
+                hints[#hints + 1] = { key = klabel(ld) .. "/" .. klabel(lu):gsub("^C%-", ""), name = "line" }
+            end
+            local np, pp_ = keylist(kcfg.preview_next)[1], keylist(kcfg.preview_prev)[1]
+            if np and pp_ then
                 hints[#hints + 1] = { key = klabel(np) .. "/" .. klabel(pp_):gsub("^C%-", ""), name = "turn" }
+            elseif np then
+                hints[#hints + 1] = { key = klabel(np), name = "turn" }
+            end
+            local tg = keylist(kcfg.preview_toggle)[1]
+            if tg then
+                hints[#hints + 1] = { key = klabel(tg), name = "hide" }
             end
         end
         for _, a in ipairs(opts.keys or {}) do
@@ -2774,6 +2800,12 @@ build = function(opts, kind)
         zindex = area and 200 or nil,
         header_air = false, -- no LEADING air row; the filter bar (or the input prompt) is the top content row
         preview_side = preview_provider and side or nil, -- so the surface can rotate the preview live (C-n/C-p)
+        scrollbar = (function() -- the thumbs beside the list and the preview: this call's, else the picker's, else the chassis' (nil)
+            if opts.scrollbar ~= nil then
+                return opts.scrollbar
+            end
+            return config.scrollbar
+        end)(),
         lock_keys = true, -- modal list: only the bound keys act; every other key is a no-op (the editable preview is exempt)
         title = title_box, -- the chassis native centered border-title
         title_line = opts.title_line, -- title placement: "row" (default) | "statusline" (chassis overlay) | "border" (opt-in)
@@ -2855,6 +2887,17 @@ build = function(opts, kind)
                         imap("<C-u>", function()
                             scroll_preview(-1)
                         end)
+                        -- … and one line at a time
+                        for _, k in ipairs(keylist(kcfg.preview_line_down)) do
+                            imap(k, function()
+                                scroll_preview(1, true)
+                            end)
+                        end
+                        for _, k in ipairs(keylist(kcfg.preview_line_up)) do
+                            imap(k, function()
+                                scroll_preview(-1, true)
+                            end)
+                        end
                         -- turn / hide the preview from the query too (the list has the surface's own keys)
                         local function turn(dir)
                             return function()

@@ -334,7 +334,7 @@ require("lvim-picker").setup({
     },
     grep_scope = "line", -- what a grep FILTER reads: "line" (the text) | "path" | "file" (the whole file)
     -- where every finder's preview sits unless the finder passes its own: "right" | "left" | "dynamic" (a float
-    -- above a docked list) | "hide". <C-n>/<C-p> move it and <C-e> hides it for the open finder.
+    -- above a docked list) | "hide". <C-w> turns it (right, left, above) and <C-p> hides / shows it for the open finder; <C-d>/<C-u> scroll it half a screen, <C-e>/<C-y> one line.
     preview_side = "right",
     -- Finder-title alignment: "left" | "center" | "right" — the same in every layout (float/area/bottom).
     -- The title text itself stays dynamic per finder; a per-call `opts.title_pos` overrides this.
@@ -385,6 +385,7 @@ require("lvim-picker").setup({
     -- Preview winbar (the file title bar on the preview panel).
     preview = {
         show_icon = true,
+        numbers = false, -- a number column in the file preview (a call's `opts.preview_numbers` wins)
         dir_pad_left = 1,
         dir_pad_right = 1,
         -- mark every match of the live pattern in the preview; the one the focused result
@@ -401,6 +402,9 @@ require("lvim-picker").setup({
     empty_preview = "Nothing to preview",
     -- Soft-wrap the list rows instead of truncating long matches.
     list_wrap = false,
+    -- The scrollbar: a thumb in the blank column right of the list and of the preview while there is more than shows. `true` / `false`, or
+    -- `{ list = true, preview = true }`; nil follows lvim-ui's `config.scrollbar` (on). A call's `opts.scrollbar` overrides it.
+    scrollbar = nil,
 
     -- Result ordering + cap around the shared lvim-fuzzy engine (merged into lvim-picker.fuzzy.config).
     fuzzy = {

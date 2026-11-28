@@ -44,6 +44,7 @@
 ---@field empty_text      string   Text shown when there are no results
 ---@field empty_preview   string   The preview placeholder text when nothing is focused
 ---@field list_wrap       boolean  Soft-wrap the list rows instead of truncating long matches
+---@field scrollbar       boolean|table|nil  A thumb right of the list and the preview when there is more than shows: true / false, or { list = bool, preview = bool }; nil = lvim-ui's `config.scrollbar` (on)
 
 ---@type LvimPickerConfig
 return {
@@ -168,13 +169,16 @@ return {
         -- (grep, FILTER mode) cycle what the filter reads in each result: the line's text → the file path →
         -- the whole file (see `grep_scope` below). Bound in the query input and the normal-mode list.
         grep_scope = "<C-s>",
-        -- TURN the preview: right → left → above the dock → hidden → right (`preview_next`), the other way round
-        -- (`preview_prev`), and HIDE ⇄ SHOW it (`preview_toggle`). Bound in the query input AND on the list (the
-        -- list's own are lvim-ui's `preview_next` / `preview_prev` / `toggle_preview`, the same keys by default).
-        -- lvim-fuzzy-cli (lfz) turns its preview through the same places with alt-p / alt-P and hides it with alt-e.
-        preview_next = "<C-n>",
-        preview_prev = "<C-p>",
-        preview_toggle = "<C-e>",
+        -- TURN the preview: right → left → above the dock → right (`preview_next`; it only turns, `preview_prev` turns it
+        -- the other way: unbound), and HIDE ⇄ SHOW it, wherever it is turned to (`preview_toggle`). SCROLL it half a screen
+        -- (`C-d` / `C-u`) or one line (`preview_line_down` / `preview_line_up`). Bound in the query input AND on the list
+        -- (the list's own are lvim-ui's `preview_next` / `preview_prev` / `toggle_preview` / `preview_scroll_line_*`, the
+        -- same keys by default). lvim-fuzzy-cli (lfz) turns its preview through the same places with alt-p / alt-P and hides it with alt-e.
+        preview_next = "<C-w>",
+        preview_prev = "",
+        preview_toggle = "<C-p>",
+        preview_line_down = "<C-e>",
+        preview_line_up = "<C-y>",
         -- OPEN IN A SPLIT of the window the finder was opened from: a NORMAL key (`n`, plain — on the list) and
         -- an INSERT key (`i`, a Ctrl chord — plain keys type into the query) per method.
         open_methods = {
@@ -314,6 +318,7 @@ return {
     -- The preview winbar (the file title bar on the preview panel).
     preview = {
         show_icon = true, -- show the file's devicon before the name (needs nvim-web-devicons)
+        numbers = false, -- a number column in the file preview (a call's `opts.preview_numbers` wins)
         dir_pad_left = 1, -- spaces before the path
         dir_pad_right = 1, -- spaces after the path
         -- MARK THE MATCHES IN THE PREVIEW. Centring the matched LINE answers only half the question a
@@ -342,4 +347,9 @@ return {
     -- Soft-wrap the LIST rows (no "↳" continuation marker) so a match far to the right of a long row stays
     -- visible instead of being truncated off-screen. A per-call `opts.list_wrap` overrides it.
     list_wrap = false,
+
+    -- The SCROLLBAR of the list and the preview (a thumb in the blank column right of the panel, shown when there is more than shows):
+    -- `true` / `false` for both, or `{ list = true, preview = true }`. nil = the chassis' own setting (lvim-ui `config.scrollbar`, on by
+    -- default). A per-call `opts.scrollbar` overrides it.
+    scrollbar = nil,
 }
