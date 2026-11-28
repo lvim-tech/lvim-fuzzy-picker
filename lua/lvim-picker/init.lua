@@ -639,14 +639,18 @@ local function open_chooser(layout)
             -- stayed PARKED in the dock after the pick and resurfaced on every cycle.
             opts = { layout = layout, dock_stack = false },
             on_confirm = function(item)
-                if item and item.mode then
-                    require("lvim-picker.modes").open(M, item.mode, layout and { layout = layout } or nil)
-                    return
-                end
-                local fn = item and item.kind and M[item.kind]
-                if type(fn) == "function" then
-                    fn(layout and { layout = layout } or nil)
-                end
+                -- the chosen finder opens AFTER the chooser has closed (next turn of the loop): opened from inside the confirm, the chooser's own
+                -- closing then ran over it — the finder came up in NORMAL mode, its list could not be scrolled
+                vim.schedule(function()
+                    if item and item.mode then
+                        require("lvim-picker.modes").open(M, item.mode, layout and { layout = layout } or nil)
+                        return
+                    end
+                    local fn = item and item.kind and M[item.kind]
+                    if type(fn) == "function" then
+                        fn(layout and { layout = layout } or nil)
+                    end
+                end)
             end,
         })
     end

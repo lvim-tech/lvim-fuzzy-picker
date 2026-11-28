@@ -52,6 +52,12 @@ function M.plugin(path, cb)
         if err or type(ins) ~= "table" or ins.op ~= "preview" then
             return cb(nil)
         end
+        -- JSON null arrives as vim.NIL (truthy userdata); drop those fields so `ins.missing or {}` and `#ins.missing` work
+        for k, v in pairs(ins) do
+            if v == vim.NIL then
+                ins[k] = nil
+            end
+        end
         cb(ins)
     end)
 end
