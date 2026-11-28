@@ -1,5 +1,5 @@
 --- The picker's client of lfz's MODES (git-status, git-log, processes, docker, systemd, ssh, …). The modes are defined
---- once, in `lvim-fuzzy-cli` (built-in ones and the user's own in its config); this module asks it for them
+--- once, in the plugin `lvim-fuzzy-plugin-modes` (and the user's own in lfz's config): lfz asks the plugin, and this module asks lfz for them
 --- (`lvim-fuzzy-cli --modes-json`) and runs each as a finder: the mode's command lists the rows, its preview command
 --- fills the preview, its `open` decides what confirming does. Nothing about a mode is written down here.
 ---

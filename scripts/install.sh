@@ -5,7 +5,7 @@
 # With lvim-pack: build = "sh scripts/install.sh".  By hand: sh scripts/install.sh
 set -e
 here=$(cd "$(dirname "$0")/.." && pwd)
-parts="host preview open cli"
+parts="host preview open cli modes"
 boot=$here/../lvim-fuzzy-plugin/scripts/bootstrap.sh
 if [ -f "$boot" ]; then
     sh "$boot" $parts
